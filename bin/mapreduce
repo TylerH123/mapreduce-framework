@@ -6,7 +6,7 @@ set -Eeuo pipefail
 # set -x
 
 start() {
-    if [[ $(pgrep -af mapreduce-) ]]; then
+    if pgrep -f mapreduce- &> /dev/null; then
         echo "Error: mapreduce-manager is already running"
         exit 1
     else
@@ -36,6 +36,7 @@ stop() {
     fi
     set -o pipefail
     
+    echo "stopping mapreduce ..."
     echo '{"message_type": "shutdown"}' | $NC localhost 6000 || true
     sleep 2  # give the Manager time to receive signal and send to Workers
 
@@ -47,14 +48,26 @@ stop() {
         echo "killing mapreduce worker ..."
         pkill -f mapreduce-worker || true
     fi
+
+}
+
+status() {
+    echo "status"
 }
 
 case $1 in
   "start")
     start
     ;;
-  "stop")
+   "stop")
     stop
+    ;;
+  "restart")
+    stop
+    start
+    ;;
+  "status")
+    status
     ;;
   *)
     usage

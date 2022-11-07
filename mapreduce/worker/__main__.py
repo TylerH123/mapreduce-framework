@@ -2,6 +2,7 @@
 import os
 import logging
 import json
+import socket
 import time
 import click
 import mapreduce.utils
@@ -32,10 +33,19 @@ class Worker:
         }
         LOGGER.debug("TCP recv\n%s", json.dumps(message_dict, indent=2))
 
-        # TODO: you should remove this. This is just so the program doesn't
-        # exit immediately!
-        LOGGER.debug("IMPLEMENT ME!")
-        time.sleep(120)
+        # # TODO: you should remove this. This is just so the program doesn't
+        # # exit immediately!
+        # LOGGER.debug("IMPLEMENT ME!")
+        # time.sleep(120)
+
+        """Test TCP Socket Client."""
+        # create an INET, STREAMing socket, this is TCP
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            # connect to the server
+            sock.connect((manager_host, manager_port))
+            # send a message
+            message = json.dumps({"port": host})
+            sock.sendall(message.encode('utf-8'))
 
 
 @click.command()
