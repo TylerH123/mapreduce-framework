@@ -34,14 +34,14 @@ class Manager:
         # }
         # LOGGER.debug("TCP recv\n%s", json.dumps(message_dict, indent=2))
 
-        """Test Threading."""
-        print("main() starting")
         threads = []
         TCPThread = threading.Thread(target=self.createTCPServer, args=(host, port))
         threads.append(TCPThread)
         UDPThread = threading.Thread(target=self.createUDPServer, args=(host, port)) 
         threads.append(UDPThread)
+        LOGGER.info("Start TCP server thread")
         TCPThread.start()
+        LOGGER.info("Start UDP server thread")
         UDPThread.start() 
 
     def createTCPServer(self, host, port): 
@@ -52,8 +52,8 @@ class Manager:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             # Bind the socket to the server
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            LOGGER.info(
-                "Start TCP server thread" 
+            LOGGER.debug(
+                "TCP bind %s:%d", host, port
             )
             sock.bind((host, port))
             sock.listen()
@@ -102,8 +102,8 @@ class Manager:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             # Bind the UDP socket to the server
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            LOGGER.info(
-                "Start UDP server thread" 
+            LOGGER.debug(
+                "UDP bind %s:%d", host, port
             )
             sock.bind((host, port))
             sock.settimeout(1)
