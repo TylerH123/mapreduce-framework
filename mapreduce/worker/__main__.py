@@ -6,7 +6,7 @@ import socket
 import time
 import click
 import mapreduce.utils
-
+import threading
 
 # Configure logging
 LOGGER = logging.getLogger(__name__)
@@ -17,26 +17,16 @@ class Worker:
     def __init__(self, host, port, manager_host, manager_port):
         """Construct a Worker instance and start listening for messages."""
         LOGGER.info(
-            "Starting worker host=%s port=%s pwd=%s",
-            host, port, os.getcwd(),
-        )
-        LOGGER.info(
-            "manager_host=%s manager_port=%s",
-            manager_host, manager_port,
+            "Worker host=%s port=%s manager_host=%s, manager_port=%s pwd=%s",
+            host, port, manager_host, manager_port, os.getcwd(),
         )
 
-        # This is a fake message to demonstrate pretty printing with logging
-        message_dict = {
-            "message_type": "register_ack",
-            "worker_host": "localhost",
-            "worker_port": 6001,
-        }
-        LOGGER.debug("TCP recv\n%s", json.dumps(message_dict, indent=2))
 
-        # # TODO: you should remove this. This is just so the program doesn't
-        # # exit immediately!
-        # LOGGER.debug("IMPLEMENT ME!")
-        # time.sleep(120)
+        threads = []
+        TCPThread = threading.Thread(target=self.createTCPServer, args=(host, port))
+        threads.append(TCPThread)
+        LOGGER.info("Start TCP server thread")
+        TCPThread.start()
 
         """Test TCP Socket Client."""
         # create an INET, STREAMing socket, this is TCP
@@ -44,9 +34,69 @@ class Worker:
             # connect to the server
             sock.connect((manager_host, manager_port))
             # send a message
-            message = json.dumps({"port": host})
+            message = json.dumps({"message_type": "register", "worker_host": host, "worker_port": port}, indent=2)
+            LOGGER.debug(
+                "TCP send to %s:%s \n%s", manager_host, manager_port, message
+            )
+            LOGGER.info(
+                "Sent connection request to Manager %s:%s", manager_host, manager_port
+            )
             sock.sendall(message.encode('utf-8'))
 
+
+    def createTCPServer(self, host, port): 
+        """Test TCP Socket Server."""
+        # Create an INET, STREAMing socket, this is TCP
+        # Note: context manager syntax allows for sockets to automatically be
+        # closed when an exception is raised or control flow returns.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            # Bind the socket to the server
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            LOGGER.debug(
+                "TCP bind %s:%s", host, port
+            )
+            sock.bind((host, port))
+            sock.listen()
+            # Socket accept() will block for a maximum of 1 second.  If you
+            # omit this, it blocks indefinitely, waiting for a connection.
+            sock.settimeout(1)
+            while True:
+                # Wait for a connection for 1s.  The socket library avoids consuming
+                # CPU while waiting for a connection.
+                try:
+                    clientsocket = sock.accept()
+                except socket.timeout:
+                    continue
+                # Socket recv() will block for a maximum of 1 second.  If you omit
+                # this, it blocks indefinitely, waiting for packets.
+                clientsocket.settimeout(1)
+                # Receive data, one chunk at a time.  If recv() times out before we
+                # can read a chunk, then go back to the top of the loop and try
+                # again.  When the client closes the connection, recv() returns
+                # empty data, which breaks out of the loop.  We make a simplifying
+                # assumption that the client will always cleanly close the
+                # connection.
+                with clientsocket:
+                    message_chunks = []
+                    while True:
+                        try:
+                            data = clientsocket.recv(4096)
+                        except socket.timeout:
+                            continue
+                        if not data:
+                            break
+                        message_chunks.append(data)
+                # Decode list-of-byte-strings to UTF8 and parse JSON data
+                message_bytes = b''.join(message_chunks)
+                message_str = message_bytes.decode("utf-8")
+                try:
+                    message_dict = json.loads(message_str)
+                    LOGGER.debug(
+                        "TCP recv \n%s", json.dumps(message_dict, indent=2)
+                    )
+
+                except json.JSONDecodeError:
+                    continue
 
 @click.command()
 @click.option("--host", "host", default="localhost")

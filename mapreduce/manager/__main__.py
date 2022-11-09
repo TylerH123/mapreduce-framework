@@ -22,29 +22,22 @@ class Manager:
         """Construct a Manager instance and start listening for messages."""
 
         LOGGER.info(
-            "Starting manager host=%s port=%s pwd=%s",
+            "Manager host=%s port=%s pwd=%s",
             host, port, os.getcwd(), 
         )
 
-        # This is a fake message to demonstrate pretty printing with logging
-        # message_dict = {
-        #     "message_type": "register",
-        #     "worker_host": "localhost",
-        #     "worker_port": 6001,
-        # }
-        # LOGGER.debug("TCP recv\n%s", json.dumps(message_dict, indent=2))
-
+        workers = {} 
         threads = []
-        TCPThread = threading.Thread(target=self.createTCPServer, args=(host, port))
+        TCPThread = threading.Thread(target=self.createTCPServer, args=(host, port, workers))
         threads.append(TCPThread)
-        UDPThread = threading.Thread(target=self.createUDPServer, args=(host, port)) 
+        UDPThread = threading.Thread(target=self.createUDPServer, args=(host, port, workers)) 
         threads.append(UDPThread)
         LOGGER.info("Start TCP server thread")
         TCPThread.start()
         LOGGER.info("Start UDP server thread")
         UDPThread.start() 
 
-    def createTCPServer(self, host, port): 
+    def createTCPServer(self, host, port, workers): 
         """Test TCP Socket Server."""
         # Create an INET, STREAMing socket, this is TCP
         # Note: context manager syntax allows for sockets to automatically be
@@ -53,7 +46,7 @@ class Manager:
             # Bind the socket to the server
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             LOGGER.debug(
-                "TCP bind %s:%d", host, port
+                "TCP bind %s:%s", host, port
             )
             sock.bind((host, port))
             sock.listen()
@@ -64,10 +57,9 @@ class Manager:
                 # Wait for a connection for 1s.  The socket library avoids consuming
                 # CPU while waiting for a connection.
                 try:
-                    clientsocket, address = sock.accept()
+                    clientsocket = sock.accept()
                 except socket.timeout:
                     continue
-                print("Connection from", address[0])
                 # Socket recv() will block for a maximum of 1 second.  If you omit
                 # this, it blocks indefinitely, waiting for packets.
                 clientsocket.settimeout(1)
@@ -92,18 +84,27 @@ class Manager:
                 message_str = message_bytes.decode("utf-8")
                 try:
                     message_dict = json.loads(message_str)
+                    LOGGER.debug(
+                        "TCP recv \n%s", json.dumps(message_dict, indent=2)
+                    )
+                    if (message_dict['message_type'] == 'register'):
+                        worker_host = message_dict['worker_host']
+                        worker_port = message_dict['worker_port']
+                        workers[worker_port] = 'alive'
+                        message_ack = json.dumps({"message_type": "register_ack", "worker_host": worker_host, "worker_port": worker_port}, indent=2)
+                        self.sendTCPMsg(worker_host, worker_port, message_ack)
+
                 except json.JSONDecodeError:
                     continue
-                print(message_dict)
 
-    def createUDPServer(self, host, port): 
+    def createUDPServer(self, host, port, workers): 
         """Test UDP Socket Server."""
         # Create an INET, DGRAM socket, this is UDP
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             # Bind the UDP socket to the server
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             LOGGER.debug(
-                "UDP bind %s:%d", host, port
+                "UDP bind %s:%s", host, port
             )
             sock.bind((host, port))
             sock.settimeout(1)
@@ -117,6 +118,16 @@ class Manager:
                 message_str = message_bytes.decode("utf-8")
                 message_dict = json.loads(message_str)
                 print(message_dict)
+
+    def sendTCPMsg(self, host, port, msg): 
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            # connect to the server
+            sock.connect((host, port))
+            # send a message
+            LOGGER.debug(
+                "TCP send to %s:%s \n%s", host, port, msg
+            )
+            sock.sendall(msg.encode('utf-8'))
 
 @click.command()
 @click.option("--host", "host", default="localhost")
