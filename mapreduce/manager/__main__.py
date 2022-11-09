@@ -26,18 +26,19 @@ class Manager:
             host, port, os.getcwd(), 
         )
 
-        workers = {} 
-        threads = []
-        TCPThread = threading.Thread(target=self.createTCPServer, args=(host, port, workers))
-        threads.append(TCPThread)
-        UDPThread = threading.Thread(target=self.createUDPServer, args=(host, port, workers)) 
-        threads.append(UDPThread)
+        self.workers = {} 
+        self.signals = {"shutdown": False}
+        self.threads = []
+        TCPThread = threading.Thread(target=self.createTCPServer, args=(host, port)) 
+        self.threads.append(TCPThread)
+        UDPThread = threading.Thread(target=self.createUDPServer, args=(host, port)) 
+        self.threads.append(UDPThread)
         LOGGER.info("Start TCP server thread")
         TCPThread.start()
         LOGGER.info("Start UDP server thread")
         UDPThread.start() 
 
-    def createTCPServer(self, host, port, workers): 
+    def createTCPServer(self, host, port): 
         """Test TCP Socket Server."""
         # Create an INET, STREAMing socket, this is TCP
         # Note: context manager syntax allows for sockets to automatically be
@@ -53,11 +54,11 @@ class Manager:
             # Socket accept() will block for a maximum of 1 second.  If you
             # omit this, it blocks indefinitely, waiting for a connection.
             sock.settimeout(1)
-            while True:
+            while not self.signals["shutdown"]:
                 # Wait for a connection for 1s.  The socket library avoids consuming
                 # CPU while waiting for a connection.
                 try:
-                    clientsocket = sock.accept()
+                    clientsocket, address = sock.accept()
                 except socket.timeout:
                     continue
                 # Socket recv() will block for a maximum of 1 second.  If you omit
@@ -90,14 +91,15 @@ class Manager:
                     if (message_dict['message_type'] == 'register'):
                         worker_host = message_dict['worker_host']
                         worker_port = message_dict['worker_port']
-                        workers[worker_port] = 'alive'
+                        self.workers[worker_port] = 'alive'
                         message_ack = json.dumps({"message_type": "register_ack", "worker_host": worker_host, "worker_port": worker_port}, indent=2)
                         self.sendTCPMsg(worker_host, worker_port, message_ack)
 
                 except json.JSONDecodeError:
                     continue
 
-    def createUDPServer(self, host, port, workers): 
+
+    def createUDPServer(self, host, port): 
         """Test UDP Socket Server."""
         # Create an INET, DGRAM socket, this is UDP
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -110,7 +112,7 @@ class Manager:
             sock.settimeout(1)
             # No sock.listen() since UDP doesn't establish connections like TCP
             # Receive incoming UDP messages
-            while True:
+            while not self.signals["shutdown"]:
                 try:
                     message_bytes = sock.recv(4096)
                 except socket.timeout:
@@ -118,6 +120,7 @@ class Manager:
                 message_str = message_bytes.decode("utf-8")
                 message_dict = json.loads(message_str)
                 print(message_dict)
+
 
     def sendTCPMsg(self, host, port, msg): 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -128,6 +131,7 @@ class Manager:
                 "TCP send to %s:%s \n%s", host, port, msg
             )
             sock.sendall(msg.encode('utf-8'))
+
 
 @click.command()
 @click.option("--host", "host", default="localhost")

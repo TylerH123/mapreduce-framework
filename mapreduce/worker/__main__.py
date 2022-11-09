@@ -64,7 +64,7 @@ class Worker:
                 # Wait for a connection for 1s.  The socket library avoids consuming
                 # CPU while waiting for a connection.
                 try:
-                    clientsocket = sock.accept()
+                    clientsocket, address = sock.accept()
                 except socket.timeout:
                     continue
                 # Socket recv() will block for a maximum of 1 second.  If you omit
