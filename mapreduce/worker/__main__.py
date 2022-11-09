@@ -20,15 +20,18 @@ class Worker:
             "Worker host=%s port=%s manager_host=%s, manager_port=%s pwd=%s",
             host, port, manager_host, manager_port, os.getcwd(),
         )
+        self.manager_host = manager_host
+        self.manager_port = manager_port
+        self.workers = {} 
+        self.signals = {"shutdown": False}
+        self.threads = []
 
-
-        threads = []
         TCPThread = threading.Thread(target=self.createTCPServer, args=(host, port))
-        threads.append(TCPThread)
+        self.threads.append(TCPThread)
+
         LOGGER.info("Start TCP server thread")
         TCPThread.start()
 
-        """Test TCP Socket Client."""
         # create an INET, STREAMing socket, this is TCP
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             # connect to the server
@@ -43,8 +46,11 @@ class Worker:
             )
             sock.sendall(message.encode('utf-8'))
 
+        for thread in self.threads:
+            thread.join()
 
-    def createTCPServer(self, host, port): 
+
+    def createTCPServer(self, host, port):
         """Test TCP Socket Server."""
         # Create an INET, STREAMing socket, this is TCP
         # Note: context manager syntax allows for sockets to automatically be
@@ -60,7 +66,7 @@ class Worker:
             # Socket accept() will block for a maximum of 1 second.  If you
             # omit this, it blocks indefinitely, waiting for a connection.
             sock.settimeout(1)
-            while True:
+            while not self.signals["shutdown"]:
                 # Wait for a connection for 1s.  The socket library avoids consuming
                 # CPU while waiting for a connection.
                 try:
@@ -86,6 +92,7 @@ class Worker:
                         if not data:
                             break
                         message_chunks.append(data)
+                
                 # Decode list-of-byte-strings to UTF8 and parse JSON data
                 message_bytes = b''.join(message_chunks)
                 message_str = message_bytes.decode("utf-8")
@@ -95,8 +102,56 @@ class Worker:
                         "TCP recv \n%s", json.dumps(message_dict, indent=2)
                     )
 
+                    if message_dict['message_type'] == 'register_ack':
+                        UDPThread = threading.Thread(target=self.sendHeartbeat, args=(host, port))
+                        self.threads.append(UDPThread)
+
+                        LOGGER.info("Starting heartbeat thread")
+                        UDPThread.start()
+                    elif message_dict['message_type'] == 'shutdown':
+                        self.signals['shutdown'] = True
+
                 except json.JSONDecodeError:
                     continue
+                
+    
+    def sendHeartbeat(self, host, port):
+        """Test UDP Socket Client."""
+        # Create an INET, DGRAM socket, this is UDP
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            # Connect to the UDP socket on server
+            sock.connect(("localhost", 6000))
+            # Send a message
+            while not self.signals['shutdown']:
+                message = json.dumps({"message_type": "heartbeat", "worker_host": host, "worker_port": port})
+                sock.sendall(message.encode('utf-8'))
+                time.sleep(2)
+
+
+    def startJob(self, input_dir, output_dir, map_exe, reduc_exe, num_map, num_reduc):
+        """Send Job registration to manager"""
+        # create an INET, STREAMing socket, this is TCP
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            # connect to the server
+            sock.connect((self.manager_host, self.manager_port))
+            # send a message
+            message = json.dumps({
+                "message_type": "new_manager_job", 
+                "input_directory": input_dir, 
+                "output_directory": output_dir,
+                "mapper_executable": map_exe,
+                "reducer_executable": reduc_exe,
+                "num_mappers" : num_map,
+                "num_reducers" : num_reduc
+            }, indent=2)
+            LOGGER.debug(
+                "TCP send to %s:%s \n%s", self.manager_host, self.manager_port, message
+            )
+            LOGGER.info(
+                "Sent connection request to Manager %s:%s", self.manager_host, self.manager_port
+            )
+            sock.sendall(message.encode('utf-8'))
+
 
 @click.command()
 @click.option("--host", "host", default="localhost")

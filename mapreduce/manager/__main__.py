@@ -10,7 +10,6 @@ import click
 import mapreduce.utils
 import socket
 
-
 # Configure logging
 LOGGER = logging.getLogger(__name__)
 
@@ -29,14 +28,24 @@ class Manager:
         self.workers = {} 
         self.signals = {"shutdown": False}
         self.threads = []
+
         TCPThread = threading.Thread(target=self.createTCPServer, args=(host, port)) 
         self.threads.append(TCPThread)
         UDPThread = threading.Thread(target=self.createUDPServer, args=(host, port)) 
         self.threads.append(UDPThread)
+
         LOGGER.info("Start TCP server thread")
         TCPThread.start()
         LOGGER.info("Start UDP server thread")
         UDPThread.start() 
+        
+        self.jobs = []
+        self.job_id = 0
+
+
+        TCPThread.join()
+        UDPThread.join()
+
 
     def createTCPServer(self, host, port): 
         """Test TCP Socket Server."""
@@ -80,6 +89,7 @@ class Manager:
                         if not data:
                             break
                         message_chunks.append(data)
+                
                 # Decode list-of-byte-strings to UTF8 and parse JSON data
                 message_bytes = b''.join(message_chunks)
                 message_str = message_bytes.decode("utf-8")
@@ -88,12 +98,18 @@ class Manager:
                     LOGGER.debug(
                         "TCP recv \n%s", json.dumps(message_dict, indent=2)
                     )
-                    if (message_dict['message_type'] == 'register'):
+
+                    if message_dict['message_type'] == 'register':
                         worker_host = message_dict['worker_host']
                         worker_port = message_dict['worker_port']
-                        self.workers[worker_port] = 'alive'
+                        self.workers[(worker_host, worker_port)] = 'alive'
                         message_ack = json.dumps({"message_type": "register_ack", "worker_host": worker_host, "worker_port": worker_port}, indent=2)
                         self.sendTCPMsg(worker_host, worker_port, message_ack)
+                    elif message_dict['message_type'] == 'shutdown':
+                        self.signals['shutdown'] = True
+                        for worker_host, worker_port in self.workers.keys(): 
+                            msg = json.dumps({"message_type": "shutdown"})
+                            self.sendTCPMsg(worker_host, worker_port, msg)
 
                 except json.JSONDecodeError:
                     continue
