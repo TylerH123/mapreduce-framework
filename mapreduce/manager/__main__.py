@@ -42,7 +42,6 @@ class Manager:
         self.jobs = []
         self.job_id = 0
 
-
         TCPThread.join()
         UDPThread.join()
 
