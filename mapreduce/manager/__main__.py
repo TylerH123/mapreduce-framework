@@ -1,14 +1,15 @@
 """MapReduce framework Manager node."""
-import os
-import tempfile
-import logging
+import collections
 import json
+import logging
+import os
+import pathlib
 import socket
+import tempfile
 import threading
 import time
 import click
 import mapreduce.utils
-import socket
 
 # Configure logging
 LOGGER = logging.getLogger(__name__)
@@ -25,7 +26,8 @@ class Manager:
             host, port, os.getcwd(), 
         )
 
-        self.workers = {} 
+        self.workers = {} # { (worker_host:str, worker_port:str) -> status:str }
+        self.heartbeatTracker = {} # { (worker_host:str, worker_port:str) -> time:float }
         self.signals = {"shutdown": False}
         self.threads = []
 
@@ -39,12 +41,19 @@ class Manager:
         LOGGER.info("Start UDP server thread")
         UDPThread.start() 
         
-        self.jobs = []
+        self.jobQueue = collections.deque() 
+        self.jobs = {} # { job_id:int -> job_info:dict } 
         self.job_id = 0
-
+        
+        # 0 - busy, 1 - ready
+        self.ready = 1
+        jobThread = threading.Thread(target=self.assignJobs) 
+        self.threads.append(jobThread)
+        jobThread.start() 
+ 
         TCPThread.join()
         UDPThread.join()
-
+        jobThread.join()
 
     def createTCPServer(self, host, port): 
         """Test TCP Socket Server."""
@@ -97,18 +106,29 @@ class Manager:
                     LOGGER.debug(
                         "TCP recv \n%s", json.dumps(message_dict, indent=2)
                     )
-
                     if message_dict['message_type'] == 'register':
                         worker_host = message_dict['worker_host']
                         worker_port = message_dict['worker_port']
-                        self.workers[(worker_host, worker_port)] = 'alive'
+                        self.workers[(worker_host, worker_port)] = 'ready'
                         message_ack = json.dumps({"message_type": "register_ack", "worker_host": worker_host, "worker_port": worker_port}, indent=2)
                         self.sendTCPMsg(worker_host, worker_port, message_ack)
+                    elif message_dict['message_type'] == 'new_manager_job':
+                        LOGGER.info("Received new job")
+                        self.jobQueue.append(self.job_id)
+                        self.jobs[self.job_id] = message_dict
+                        self.job_id += 1
+
+                        self.partitionTask(message_dict['input_directory'])
+
+                        output = message_dict['output_directory']
+                        if os.path.exists(output):
+                            os.rmdir(output)
+                        os.mkdir(output)
                     elif message_dict['message_type'] == 'shutdown':
-                        self.signals['shutdown'] = True
-                        for worker_host, worker_port in self.workers.keys(): 
+                        for worker_host, worker_port in self.workers.keys():
                             msg = json.dumps({"message_type": "shutdown"})
                             self.sendTCPMsg(worker_host, worker_port, msg)
+                        self.signals['shutdown'] = True 
 
                 except json.JSONDecodeError:
                     continue
@@ -126,15 +146,27 @@ class Manager:
             sock.bind((host, port))
             sock.settimeout(1)
             # No sock.listen() since UDP doesn't establish connections like TCP
+
             # Receive incoming UDP messages
             while not self.signals["shutdown"]:
+
+                for worker in self.heartbeatTracker:
+                    if self.heartbeatTracker[worker] and time.time() - self.heartbeatTracker[worker] > 10:
+                        LOGGER.info(f'Lost connection to worker {worker}')
+                        self.workers[worker] = 'dead'
+                        self.heartbeatTracker[worker] = None
+
                 try:
                     message_bytes = sock.recv(4096)
                 except socket.timeout:
                     continue
+                
                 message_str = message_bytes.decode("utf-8")
                 message_dict = json.loads(message_str)
-                print(message_dict)
+                if message_dict['message_type'] == 'heartbeat':
+                    worker_host = message_dict['worker_host']
+                    worker_port = message_dict['worker_port']
+                    self.heartbeatTracker[(worker_host, worker_port)] = time.time()
 
 
     def sendTCPMsg(self, host, port, msg): 
@@ -145,8 +177,37 @@ class Manager:
             LOGGER.debug(
                 "TCP send to %s:%s \n%s", host, port, msg
             )
-            sock.sendall(msg.encode('utf-8'))
+            try:
+                sock.sendall(msg.encode('utf-8'))
+            except ConnectionRefusedError:
+                # TODO: Mark worker as dead, reassign jobs
+                self.workers[(host, port)] = 'dead'
+                self.heartbeatTracker[(host, port)] = None
 
+
+    def assignJobs(self): 
+        while not self.signals['shutdown']: 
+            if self.ready and self.jobQueue: 
+                current_job = self.jobs[self.jobQueue.popleft()]
+                prefix = f"mapreduce-shared-job{self.job_id:05d}-"
+                with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
+                    LOGGER.info("Created tmpdir %s", tmpdir)
+                    while not self.signals['shutdown']:
+                        # files = [f for f in os.listdir(current_job["input_directory"]) if os.path.isfile(os.path.join(current_job["input_directory"], f))]
+                        # for(current_job["input_directory"], )
+                        # current_job["num_mappers"]
+                        # for e in files:
+                        LOGGER.info(json.dumps(current_job, indent=2))
+                LOGGER.info("Cleaned up tmpdir %s", tmpdir)
+            
+            # time.sleep(1)
+
+    # {"message_type": "new_manager_job", "input_directory": ".", "output_directory": "."}
+    def partitionTask(input_directory):
+        path = pathlib.Path(input_directory)
+        print(path)
+        print(list(path.glob('')))
+        return
 
 @click.command()
 @click.option("--host", "host", default="localhost")

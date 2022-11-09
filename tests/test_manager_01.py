@@ -11,6 +11,7 @@ from utils import TESTDATA_DIR
 def worker_message_generator(tmp_path):
     """Fake Worker messages."""
     # New word count job
+    
     yield json.dumps({
         "message_type": "new_manager_job",
         "input_directory": TESTDATA_DIR/"input",
