@@ -117,7 +117,6 @@ class Manager:
                         self.jobQueue.append(self.job_id) 
                         self.jobs[self.job_id] = message_dict
                         self.job_id += 1
-                        # self.partitionTask(message_dict['input_directory'])
                         output = message_dict['output_directory']
                         if os.path.exists(output):
                             os.rmdir(output)
@@ -187,26 +186,24 @@ class Manager:
                 self.heartbeatTracker[(host, port)] = None
 
 
-    def assignJobs(self): 
-        while not self.signals['shutdown']: 
+    def assignJobs(self):
+        while not self.signals['shutdown']:
             # LOGGER.debug(self.jobQueue)
-            if self.ready and self.jobQueue: 
+            if self.ready and self.jobQueue:
                 # LOGGER.debug(self.jobQueue)
                 current_job_id = self.jobQueue.popleft()
                 current_job = self.jobs[current_job_id]
+                input_dir = current_job['input']
                 prefix = f"mapreduce-shared-job{current_job_id:05d}-"
                 with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
                     LOGGER.info("Created tmpdir %s", tmpdir)
-                    while not self.signals['shutdown']: 
+                    while not self.signals['shutdown']:
                         continue
-                    # files = [f for f in os.listdir(current_job["input_directory"]) if os.path.isfile(os.path.join(current_job["input_directory"], f))]
-                    # for(current_job["input_directory"], )
-                    # current_job["num_mappers"]
-                    # for e in files:
-                    # LOGGER.debug(json.dumps(current_job, indent=2))
+                        
                 LOGGER.info("Cleaned up tmpdir %s", tmpdir)
-            
+
             # time.sleep(1)
+
 
     # {"message_type": "new_manager_job", "input_directory": ".", "output_directory": "."}
     def partitionTask(input_directory):
@@ -214,6 +211,7 @@ class Manager:
         print(path)
         print(list(path.glob('')))
         return
+
 
 @click.command()
 @click.option("--host", "host", default="localhost")
