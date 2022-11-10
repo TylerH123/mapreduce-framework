@@ -114,17 +114,17 @@ class Manager:
                         self.sendTCPMsg(worker_host, worker_port, message_ack)
                     elif message_dict['message_type'] == 'new_manager_job':
                         LOGGER.info("Received new job")
-                        self.jobQueue.append(self.job_id)
+                        self.jobQueue.append(self.job_id) 
                         self.jobs[self.job_id] = message_dict
                         self.job_id += 1
-
-                        self.partitionTask(message_dict['input_directory'])
-
+                        # self.partitionTask(message_dict['input_directory'])
                         output = message_dict['output_directory']
                         if os.path.exists(output):
                             os.rmdir(output)
                         os.mkdir(output)
+                        LOGGER.debug(f'Created new dir: {output}')
                     elif message_dict['message_type'] == 'shutdown':
+                        LOGGER.debug("Received shutdown")
                         for worker_host, worker_port in self.workers.keys():
                             msg = json.dumps({"message_type": "shutdown"})
                             self.sendTCPMsg(worker_host, worker_port, msg)
@@ -164,6 +164,8 @@ class Manager:
                 message_str = message_bytes.decode("utf-8")
                 message_dict = json.loads(message_str)
                 if message_dict['message_type'] == 'heartbeat':
+                    # LOGGER.debug("Received heartbeat")
+                    # LOGGER.debug("Received heartbeat \n%s", json.dumps(message_dict, indent=2))
                     worker_host = message_dict['worker_host']
                     worker_port = message_dict['worker_port']
                     self.heartbeatTracker[(worker_host, worker_port)] = time.time()
@@ -187,17 +189,21 @@ class Manager:
 
     def assignJobs(self): 
         while not self.signals['shutdown']: 
+            # LOGGER.debug(self.jobQueue)
             if self.ready and self.jobQueue: 
-                current_job = self.jobs[self.jobQueue.popleft()]
-                prefix = f"mapreduce-shared-job{self.job_id:05d}-"
+                # LOGGER.debug(self.jobQueue)
+                current_job_id = self.jobQueue.popleft()
+                current_job = self.jobs[current_job_id]
+                prefix = f"mapreduce-shared-job{current_job_id:05d}-"
                 with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
                     LOGGER.info("Created tmpdir %s", tmpdir)
-                    while not self.signals['shutdown']:
-                        # files = [f for f in os.listdir(current_job["input_directory"]) if os.path.isfile(os.path.join(current_job["input_directory"], f))]
-                        # for(current_job["input_directory"], )
-                        # current_job["num_mappers"]
-                        # for e in files:
-                        LOGGER.info(json.dumps(current_job, indent=2))
+                    while not self.signals['shutdown']: 
+                        continue
+                    # files = [f for f in os.listdir(current_job["input_directory"]) if os.path.isfile(os.path.join(current_job["input_directory"], f))]
+                    # for(current_job["input_directory"], )
+                    # current_job["num_mappers"]
+                    # for e in files:
+                    # LOGGER.debug(json.dumps(current_job, indent=2))
                 LOGGER.info("Cleaned up tmpdir %s", tmpdir)
             
             # time.sleep(1)
