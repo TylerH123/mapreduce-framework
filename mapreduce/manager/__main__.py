@@ -26,8 +26,11 @@ class Manager:
             host, port, os.getcwd(), 
         )
 
-        self.workers = {} # { (worker_host:str, worker_port:str) -> status:str }
-        self.heartbeatTracker = {} # { (worker_host:str, worker_port:str) -> time:float }
+
+        self.workers = [] # [ index: (host, port, status, task:dict) ] (status: "r", "b", "d")
+        self.workerInds = {} # { (worker_host:str, worker_port:int) -> index:int }
+        self.workers_avail = 0
+        self.heartbeatTracker = {} # { (worker_host:str, worker_port:int) -> time:float }
         self.signals = {"shutdown": False}
         self.threads = []
 
@@ -106,12 +109,19 @@ class Manager:
                     LOGGER.debug(
                         "TCP recv \n%s", json.dumps(message_dict, indent=2)
                     )
+                    
                     if message_dict['message_type'] == 'register':
                         worker_host = message_dict['worker_host']
                         worker_port = message_dict['worker_port']
-                        self.workers[(worker_host, worker_port)] = 'ready'
-                        message_ack = json.dumps({"message_type": "register_ack", "worker_host": worker_host, "worker_port": worker_port}, indent=2)
+                        self.workers.append([worker_host, worker_port, "r", None])
+                        self.workerInds[(worker_host, worker_port)] = len(self.workers) - 1
+                        self.workers_avail += 1
+                        message_ack = json.dumps({
+                            "message_type": "register_ack", 
+                            "worker_host": worker_host, 
+                            "worker_port": worker_port}, indent=2)
                         self.sendTCPMsg(worker_host, worker_port, message_ack)
+                        
                     elif message_dict['message_type'] == 'new_manager_job':
                         LOGGER.info("Received new job")
                         self.jobQueue.append(self.job_id) 
@@ -122,12 +132,13 @@ class Manager:
                             os.rmdir(output)
                         os.mkdir(output)
                         LOGGER.debug(f'Created new dir: {output}')
+                        
                     elif message_dict['message_type'] == 'shutdown':
                         LOGGER.debug("Received shutdown")
-                        for worker_host, worker_port in self.workers.keys():
+                        for worker in self.workers:
                             msg = json.dumps({"message_type": "shutdown"})
-                            self.sendTCPMsg(worker_host, worker_port, msg)
-                        self.signals['shutdown'] = True 
+                            self.sendTCPMsg(worker[0], worker[1], msg)
+                        self.signals['shutdown'] = True
 
                 except json.JSONDecodeError:
                     continue
@@ -152,7 +163,9 @@ class Manager:
                 for worker in self.heartbeatTracker:
                     if self.heartbeatTracker[worker] and time.time() - self.heartbeatTracker[worker] > 10:
                         LOGGER.info(f'Lost connection to worker {worker}')
-                        self.workers[worker] = 'dead'
+                        workerInd = self.workerInds[worker]
+                        self.workerInds[workerInd][2] = 'd'
+                        
                         self.heartbeatTracker[worker] = None
 
                 try:
@@ -163,8 +176,6 @@ class Manager:
                 message_str = message_bytes.decode("utf-8")
                 message_dict = json.loads(message_str)
                 if message_dict['message_type'] == 'heartbeat':
-                    # LOGGER.debug("Received heartbeat")
-                    # LOGGER.debug("Received heartbeat \n%s", json.dumps(message_dict, indent=2))
                     worker_host = message_dict['worker_host']
                     worker_port = message_dict['worker_port']
                     self.heartbeatTracker[(worker_host, worker_port)] = time.time()
@@ -180,37 +191,106 @@ class Manager:
             )
             try:
                 sock.sendall(msg.encode('utf-8'))
+                return True
             except ConnectionRefusedError:
-                # TODO: Mark worker as dead, reassign jobs
-                self.workers[(host, port)] = 'dead'
+                workerInd = self.workerInds[(host, port)]
+                self.workers[workerInd][2] = 'd'
                 self.heartbeatTracker[(host, port)] = None
+                # TODO: Recirculate failed task back to task queue
+                return False
 
 
     def assignJobs(self):
         while not self.signals['shutdown']:
-            # LOGGER.debug(self.jobQueue)
             if self.ready and self.jobQueue:
-                # LOGGER.debug(self.jobQueue)
                 current_job_id = self.jobQueue.popleft()
                 current_job = self.jobs[current_job_id]
-                input_dir = current_job['input']
+                input_dir = current_job['input_directory']
+                output_dir = current_job['output_directory']
+                num_mappers = current_job['num_mappers']
+                num_reducers = current_job['num_reducers']
                 prefix = f"mapreduce-shared-job{current_job_id:05d}-"
                 with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
                     LOGGER.info("Created tmpdir %s", tmpdir)
-                    while not self.signals['shutdown']:
+                    tasks = self.partitionTask(input_dir, num_mappers)
+                    task_id = 0
+                    
+                    # Begin map stage
+                    LOGGER.info("Begin Map Stage")
+                    while not self.signals['shutdown'] and tasks:
+                        if self.workers_avail > 0:
+                            taskMessage = {
+                                "message_type": "new_map_task",
+                                "task_id": task_id,
+                                "input_paths": tasks[task_id],
+                                "executable": current_job['mapper_executable'],
+                                "output_directory": tmpdir,
+                                "num_partitions": current_job['num_reducers'],
+                                "worker_host": None,
+                                "worker_port": None
+                            }
+                            if self.assignTask(taskMessage):
+                                tasks.pop(task_id)
+                                task_id += 1
+                                self.workers_avail -= 1
+                                LOGGER.debug(tasks)
+                    
+                    # Block reduce stage from starting until map stage is completed
+                    # Map stage is completed when the temp dir has the same number of files as input dir
+                    path = pathlib.Path(tmpdir)
+                    files = list(path.glob('*'))
+
+                    path = pathlib.Path(input_dir)
+                    input_files = list(path.glob('*'))
+                    while len(files) != len(input_files):
+                        LOGGER.debug("Waiting on map to finish...")
+                        time.sleep(1)
                         continue
-                        
+                    
+                    # Begin reduce stage
+                    LOGGER.info("Begin Reduce Stage")
+                    # while not self.signals['shutdown'] and tasks:
+                    #     if self.workers_avail > 0:
+                    #         executable = current_job['reducer_executable']
+                    #         taskMessage = {
+                    #             "message_type": "new_map_task",
+                    #             "task_id": task_id,
+                    #             "input_paths": tasks[0],
+                    #             "executable": executable,
+                    #             "output_directory": output_dir,
+                    #             "num_partitions": current_job['num_reducers'],
+                    #             "worker_host": None,
+                    #             "worker_port": None
+                    #         }
+                    #         if self.assignTask(taskMessage):
+                    #             tasks.pop(0)
+                    #             task_id += 1
+                    #             self.workers_avail -= 1
+
                 LOGGER.info("Cleaned up tmpdir %s", tmpdir)
 
-            # time.sleep(1)
+    def assignTask(self, task):
+        for worker in self.workers: 
+            if worker[2] == "r":
+                task['worker_host'] = worker[0]
+                task['worker_port'] = worker[1]
+                worker[3] = task
+                worker[2] = "b"
+                return self.sendTCPMsg(worker[0], worker[1], json.dumps(task, indent=2))
+        return False
 
 
     # {"message_type": "new_manager_job", "input_directory": ".", "output_directory": "."}
-    def partitionTask(input_directory):
+    def partitionTask(self, input_directory, num_mappers):
         path = pathlib.Path(input_directory)
-        print(path)
-        print(list(path.glob('')))
-        return
+        files = list(path.glob('*'))
+        files.sort()
+        LOGGER.debug("Sorted files: %s", files)
+        tasks = collections.defaultdict(list)
+        for i in range(len(files)):
+            tasks[i % num_mappers].append(str(files[i]))
+        return tasks
+
 
 
 @click.command()
@@ -238,3 +318,12 @@ def main(host, port, logfile, loglevel, shared_dir):
 
 if __name__ == "__main__":
     main()
+
+
+# mapreduce-submit \
+#     --input tests/testdata/input_large \
+#     --output output \
+#     --mapper tests/testdata/exec/wc_map.sh \
+#     --reducer tests/testdata/exec/wc_reduce.sh \
+#     --nmappers 2 \
+#     --nreducers 2

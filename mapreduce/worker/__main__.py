@@ -98,7 +98,7 @@ class Worker:
                 message_str = message_bytes.decode("utf-8")
                 try:
                     message_dict = json.loads(message_str)
-                    LOGGER.debug(
+                    LOGGER.info(
                         "TCP recv \n%s", json.dumps(message_dict, indent=2)
                     )
 
