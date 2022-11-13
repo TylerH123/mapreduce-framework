@@ -147,15 +147,19 @@ class Worker:
 
         task_id = message_dict['task_id']
         prefix = f'mapreduce-local-task{task_id}'
+
+        # Temporary directory for map output files
         with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
             for file in input_paths:
                 with open(file) as infile:
+                    # Run executable on input file and pipe output to memory
                     with subprocess.Popen(
                         [executable],
                         stdin=infile,
                         stdout=subprocess.PIPE,
                         text=True,
                     ) as map_process:
+                        # Organize matching keys to same files for reduce
                         for line in map_process.stdout:
                             word = line.split()[0]
                             hexdigest = hashlib.md5(
@@ -169,6 +173,7 @@ class Worker:
                                 f.write(line)
             temp_output_path = pathlib.Path(tmpdir)
             temp_output_files = list(temp_output_path.glob('*'))
+            # Sort keys within individual files and copy files to output directory
             for file in temp_output_files:
                 lines = []
                 with open(file, "r") as f:

@@ -28,7 +28,7 @@ class Manager:
 
 
         self.workers = [] # [ index: (host, port, status, task:dict) ] (status: "r", "b", "d")
-        self.workerInds = {} # { (worker_host:str, worker_port:int) -> index:int }
+        self.worker_inds = {} # { (worker_host:str, worker_port:int) -> index:int }
         self.workers_avail = 0
         self.heartbeatTracker = {} # { (worker_host:str, worker_port:int) -> time:float }
         self.signals = {"shutdown": False}
@@ -44,7 +44,7 @@ class Manager:
         LOGGER.info("Start UDP server thread")
         UDPThread.start() 
         
-        self.jobQueue = collections.deque() 
+        self.job_queue = collections.deque() 
         self.jobs = {} # { job_id:int -> job_info:dict } 
         self.job_id = 0
         
@@ -114,7 +114,7 @@ class Manager:
                         worker_host = message_dict['worker_host']
                         worker_port = message_dict['worker_port']
                         self.workers.append([worker_host, worker_port, "r", None])
-                        self.workerInds[(worker_host, worker_port)] = len(self.workers) - 1
+                        self.worker_inds[(worker_host, worker_port)] = len(self.workers) - 1
                         self.workers_avail += 1
                         message_ack = json.dumps({
                             "message_type": "register_ack", 
@@ -124,7 +124,7 @@ class Manager:
                         
                     elif message_dict['message_type'] == 'new_manager_job':
                         LOGGER.info("Received new job")
-                        self.jobQueue.append(self.job_id) 
+                        self.job_queue.append(self.job_id) 
                         self.jobs[self.job_id] = message_dict
                         self.job_id += 1
                         output = message_dict['output_directory']
@@ -132,6 +132,13 @@ class Manager:
                             os.rmdir(output)
                         os.mkdir(output)
                         LOGGER.debug(f'Created new dir: {output}')
+
+                    elif message_dict['message_type'] == 'finished':
+                        worker_host = message_dict['worker_host']
+                        worker_port = message_dict['worker_port']
+                        worker_ind = self.worker_inds[(worker_host, worker_port)]
+                        self.workers[worker_ind][2] = 'r'
+                        self.workers[worker_ind][3] = None
                         
                     elif message_dict['message_type'] == 'shutdown':
                         LOGGER.debug("Received shutdown")
@@ -163,10 +170,10 @@ class Manager:
                 for worker in self.heartbeatTracker:
                     if self.heartbeatTracker[worker] and time.time() - self.heartbeatTracker[worker] > 10:
                         LOGGER.info(f'Lost connection to worker {worker}')
-                        workerInd = self.workerInds[worker]
-                        self.workerInds[workerInd][2] = 'd'
-                        
+                        worker_ind = self.worker_inds[worker]
+                        self.worker_inds[worker_ind][2] = 'd'
                         self.heartbeatTracker[worker] = None
+                        # TODO: Recirculate failed task back to task queue
 
                 try:
                     message_bytes = sock.recv(4096)
@@ -193,8 +200,8 @@ class Manager:
                 sock.sendall(msg.encode('utf-8'))
                 return True
             except ConnectionRefusedError:
-                workerInd = self.workerInds[(host, port)]
-                self.workers[workerInd][2] = 'd'
+                worker_ind = self.worker_inds[(host, port)]
+                self.workers[worker_ind][2] = 'd'
                 self.heartbeatTracker[(host, port)] = None
                 # TODO: Recirculate failed task back to task queue
                 return False
@@ -202,8 +209,8 @@ class Manager:
 
     def assignJobs(self):
         while not self.signals['shutdown']:
-            if self.ready and self.jobQueue:
-                current_job_id = self.jobQueue.popleft()
+            if self.ready and self.job_queue:
+                current_job_id = self.job_queue.popleft()
                 current_job = self.jobs[current_job_id]
                 input_dir = current_job['input_directory']
                 output_dir = current_job['output_directory']
@@ -219,7 +226,7 @@ class Manager:
                     LOGGER.info("Begin Map Stage")
                     while not self.signals['shutdown'] and tasks:
                         if self.workers_avail > 0:
-                            taskMessage = {
+                            task_message = {
                                 "message_type": "new_map_task",
                                 "task_id": task_id,
                                 "input_paths": tasks[task_id],
@@ -229,7 +236,7 @@ class Manager:
                                 "worker_host": None,
                                 "worker_port": None
                             }
-                            if self.assignTask(taskMessage):
+                            if self.assignTask(task_message):
                                 tasks.pop(task_id)
                                 task_id += 1
                                 self.workers_avail -= 1
