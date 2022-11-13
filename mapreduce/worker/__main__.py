@@ -55,7 +55,7 @@ class Worker:
             )
             sock.sendall(message.encode('utf-8'))
 
-        for thread in self.threads:
+        for thread in self.threads: 
             thread.join()
 
     def createTCPServer(self, host, port):
@@ -138,8 +138,6 @@ class Worker:
                         
                     elif message_dict['message_type'] == 'shutdown':
                         self.signals['shutdown'] = True
-                        for thread in self.threads: 
-                            thread.join()
                     
                 except json.JSONDecodeError:
                     continue

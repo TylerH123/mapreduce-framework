@@ -191,21 +191,8 @@ class Manager:
                 prefix = f"mapreduce-shared-job{current_job_id:05d}-"
                 with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
                     LOGGER.info("Created tmpdir %s", tmpdir)
-
-                    LOGGER.info("Begin Map Stage")
-                    LOGGER.info(current_job)
-                    self.assignTasks(current_job, False, tmpdir)
-                    
-                    # Block reduce stage from starting until map stage is completed
-                    # Map stage is completed when the temp dir has the same number of files as input dir
-                    while not self.signals['shutdown'] and self.num_tasks != 0:
-                        LOGGER.debug("Waiting on map to finish...")
-                        time.sleep(1)
-                        continue
-                    
-                    LOGGER.info("Begin Reduce Stage")
-                    LOGGER.info(current_job)
-                    self.assignTasks(current_job, True, tmpdir)
+                    self.startStage(current_job, False, tmpdir)
+                    self.startStage(current_job, True, tmpdir)
                 LOGGER.info("Cleaned up tmpdir %s", tmpdir)
 
 
@@ -221,13 +208,16 @@ class Manager:
 
 
     # {"message_type": "new_manager_job", "input_directory": ".", "output_directory": "."}
-    def partitionMapTask(self, input_directory, num_mappers):
+    def partitionMapTask(self, job):
         LOGGER.debug("Partitioning map tasks")
-        path = pathlib.Path(input_directory)
+        input_dir = job['input_directory']
+        num_mappers = job['num_mappers']
+        path = pathlib.Path(input_dir)
         files = list(path.glob('*'))
         files.sort()
         for i in range(len(files)):
             self.tasks[i % num_mappers].append(str(files[i]))
+        self.num_tasks = len(self.tasks)
 
 
     def partitionReduceTask(self, input_directory):
@@ -238,6 +228,7 @@ class Manager:
             filename = str(files[i])
             file_num = int(filename[-5:])
             self.tasks[file_num].append(filename)
+        self.num_tasks = len(self.tasks)
 
 
     def registerWorker(self, message_dict): 
@@ -270,6 +261,7 @@ class Manager:
         os.mkdir(output)
         LOGGER.debug(f'Created new dir: {output}')
 
+
     def handleFinishedTask(self, message_dict): 
         worker_host = message_dict['worker_host']
         worker_port = message_dict['worker_port']
@@ -291,26 +283,15 @@ class Manager:
 
     def assignTasks(self, job, reduce, tempdir): 
         LOGGER.debug("Assigning tasks")
-        num_mappers = job['num_mappers']
         num_reducers = job['num_reducers']
         if reduce:
-            LOGGER.debug("Begin reduce partitioning: \n%s", job)
             executable = job['reducer_executable']
-            input_dir = tempdir
             output_dir = job['output_directory']
-            self.partitionReduceTask(input_dir)
-            LOGGER.debug("reduce tasks")
-            LOGGER.debug(self.tasks)
         else:
-            LOGGER.debug("Begin map partitioning")
             executable = job['mapper_executable']
-            input_dir = job['input_directory']
             output_dir = tempdir
-            self.partitionMapTask(input_dir, num_mappers)
 
-        self.num_tasks = len(self.tasks)
-        task_id = 0
-                     
+        task_id = 0                     
         LOGGER.debug("Start handing out tasks")
         while not self.signals['shutdown'] and self.tasks:
             # LOGGER.debug(self.tasks)
@@ -340,6 +321,20 @@ class Manager:
                     self.tasks.pop(task_id)
                     task_id += 1
                     self.workers_avail -= 1
+
+    
+    def startStage(self, job, reduce, tmpdir): 
+        if reduce: 
+            self.partitionReduceTask(tmpdir) 
+            stage = "reduce"
+        else:
+            self.partitionMapTask(job)
+            stage = "map"
+        while not self.signals['shutdown'] and self.num_tasks != 0:
+            LOGGER.info("Begin %s stage", stage)
+            self.assignTasks(job, reduce, tmpdir)
+            LOGGER.debug("Waiting on %s to finish...", stage)
+            time.sleep(2)
 
 
 @click.command()
