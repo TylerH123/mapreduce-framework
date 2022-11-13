@@ -1,6 +1,7 @@
 """MapReduce framework Worker node."""
 import click
 import hashlib
+import heapq
 import json
 import logging
 import mapreduce.utils
@@ -11,6 +12,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import contextlib
 
 # Configure logging
 LOGGER = logging.getLogger(__name__)
@@ -115,16 +117,30 @@ class Worker:
 
                         LOGGER.info("Starting heartbeat thread")
                         UDPThread.start()
-                    if message_dict['message_type'] == 'new_map_task':
+                        
+                    elif message_dict['message_type'] == 'new_map_task':
                         map_task = threading.Thread(
                             target=self.startMapTask, args=(message_dict,))
                         self.threads.append(map_task)
 
                         LOGGER.info("Starting mapper thread")
                         map_task.start()
+                        map_task.join()
+                        
+                    elif message_dict['message_type'] == 'new_reduce_task':
+                        reduce_task = threading.Thread(
+                            target=self.startReduceTask, args=(message_dict,))
+                        self.threads.append(reduce_task)
+
+                        LOGGER.info("Starting reduce thread")
+                        reduce_task.start()
+                        reduce_task.join()
+                        
                     elif message_dict['message_type'] == 'shutdown':
                         self.signals['shutdown'] = True
-
+                        for thread in self.threads: 
+                            thread.join()
+                    
                 except json.JSONDecodeError:
                     continue
 
@@ -193,7 +209,51 @@ class Worker:
                 "worker_port": message_dict['worker_port']
             })
             self.sendTCPMsg(self.manager_host, self.manager_port, message)
+    
+    def startReduceTask(self, message_dict):
+        input_paths = message_dict['input_paths']
 
+        files = []
+        with contextlib.ExitStack() as stack:
+            files = [stack.enter_context(open(input)) for input in input_paths]
+            # All opened files will automatically be closed at the end of
+            # the with statement, even if attempts to open files later
+            # in the list raise an exception
+
+            task_id = message_dict['task_id']
+            executable = message_dict['executable']
+            instream = heapq.merge(*files)
+
+            prefix = f'mapreduce-local-task{task_id}-'
+            with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
+                outfile = f'part-{task_id}'
+
+                with open(os.path.join(tmpdir, outfile), 'w') as f:
+                    with subprocess.Popen(
+                        [executable],
+                        text=True,
+                        stdin=subprocess.PIPE,
+                        stdout=f,
+                    ) as reduce_process:
+                        for line in instream:
+                            LOGGER.info(line)
+                            reduce_process.stdin.write(line)
+
+            # output_path = pathlib.Path(message_dict['output_directory'])
+            # filename = os.path.basename(outfile).split('/')[-1]
+            # output_file = os.path.join(output_path, filename)
+            # LOGGER.debug(output_file)
+            # with open(output_file, "w") as f:
+            #     f.writelines(lines)
+
+            # message = json.dumps({
+            #     "message_type": "finished",
+            #     "task_id": task_id,
+            #     "worker_host": message_dict['worker_host'],
+            #     "worker_port": message_dict['worker_port']
+            # })
+            # self.sendTCPMsg(self.manager_host, self.manager_port, message)
+    
     def sendTCPMsg(self, host, port, msg):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             # connect to the server
