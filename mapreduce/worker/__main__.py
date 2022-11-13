@@ -179,7 +179,8 @@ class Worker:
                     ) as map_process:
                         # Organize matching keys to same files for reduce
                         for line in map_process.stdout:
-                            word = line.split()[0]
+                            # LOGGER.info(line)
+                            word = line.split('\t')[0]
                             hexdigest = hashlib.md5(
                                 word.encode("utf-8")).hexdigest()
                             keyhash = int(hexdigest, base=16)
