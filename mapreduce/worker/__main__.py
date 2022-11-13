@@ -59,6 +59,7 @@ class Worker:
         for thread in self.threads: 
             thread.join()
 
+
     def createTCPServer(self, host, port):
         """Test TCP Socket Server."""
         # Create an INET, STREAMing socket, this is TCP
@@ -143,6 +144,7 @@ class Worker:
                 except json.JSONDecodeError:
                     continue
 
+
     def sendHeartbeat(self, host, port):
         """Test UDP Socket Client."""
         # Create an INET, DGRAM socket, this is UDP
@@ -156,12 +158,13 @@ class Worker:
                 sock.sendall(message.encode('utf-8'))
                 time.sleep(2)
 
+
     def startMapTask(self, message_dict):
         executable = message_dict['executable']
         input_paths = message_dict['input_paths']
 
         task_id = message_dict['task_id']
-        prefix = f'mapreduce-local-task{task_id}'
+        prefix = f'mapreduce-local-task{task_id:05d}-'
 
         # Temporary directory for map output files
         with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
@@ -208,7 +211,8 @@ class Worker:
                 "worker_port": message_dict['worker_port']
             })
             self.sendTCPMsg(self.manager_host, self.manager_port, message)
-    
+
+
     def startReduceTask(self, message_dict):
         input_paths = message_dict['input_paths']
 
@@ -223,7 +227,8 @@ class Worker:
             executable = message_dict['executable']
             instream = heapq.merge(*files)
 
-            prefix = f'mapreduce-local-task{task_id}-'
+            prefix = f'mapreduce-local-task{task_id:05d}-'
+            LOGGER.debug(prefix)
             with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
                 file = f'part-{task_id:05d}'
                 filepath = os.path.join(tmpdir, file)
@@ -249,7 +254,8 @@ class Worker:
                 "worker_port": message_dict['worker_port']
             })
             self.sendTCPMsg(self.manager_host, self.manager_port, message)
-    
+
+
     def sendTCPMsg(self, host, port, msg):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             # connect to the server
