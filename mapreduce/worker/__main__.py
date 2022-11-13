@@ -7,6 +7,7 @@ import logging
 import mapreduce.utils
 import os
 import pathlib
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -224,9 +225,10 @@ class Worker:
 
             prefix = f'mapreduce-local-task{task_id}-'
             with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
-                outfile = f'part-{task_id}'
+                file = f'part-{task_id:05d}'
+                filepath = os.path.join(tmpdir, file)
 
-                with open(os.path.join(tmpdir, outfile), 'w') as f:
+                with open(filepath, 'w') as f:
                     with subprocess.Popen(
                         [executable],
                         text=True,
@@ -234,23 +236,19 @@ class Worker:
                         stdout=f,
                     ) as reduce_process:
                         for line in instream:
-                            LOGGER.info(line)
                             reduce_process.stdin.write(line)
+                
+                output_path = message_dict['output_directory']
+                shutil.move(filepath, output_path)
+                LOGGER.info(output_path)
 
-            # output_path = pathlib.Path(message_dict['output_directory'])
-            # filename = os.path.basename(outfile).split('/')[-1]
-            # output_file = os.path.join(output_path, filename)
-            # LOGGER.debug(output_file)
-            # with open(output_file, "w") as f:
-            #     f.writelines(lines)
-
-            # message = json.dumps({
-            #     "message_type": "finished",
-            #     "task_id": task_id,
-            #     "worker_host": message_dict['worker_host'],
-            #     "worker_port": message_dict['worker_port']
-            # })
-            # self.sendTCPMsg(self.manager_host, self.manager_port, message)
+            message = json.dumps({
+                "message_type": "finished",
+                "task_id": task_id,
+                "worker_host": message_dict['worker_host'],
+                "worker_port": message_dict['worker_port']
+            })
+            self.sendTCPMsg(self.manager_host, self.manager_port, message)
     
     def sendTCPMsg(self, host, port, msg):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
