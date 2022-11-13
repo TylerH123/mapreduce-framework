@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import pathlib
+import shutil
 import socket
 import tempfile
 import threading
@@ -266,7 +267,7 @@ class Manager:
         self.job_id += 1
         output = message_dict['output_directory']
         if os.path.exists(output):
-            os.rmdir(output)
+            shutil.rmtree(output)
         os.mkdir(output)
         LOGGER.debug(f'Created new dir: {output}')
 
@@ -370,7 +371,7 @@ if __name__ == "__main__":
 
 
 # mapreduce-submit \
-#     --input tests/testdata/input_large \
+#     --input tests/testdata/input_small \
 #     --output output \
 #     --mapper tests/testdata/exec/wc_map.sh \
 #     --reducer tests/testdata/exec/wc_reduce.sh \
