@@ -10,10 +10,53 @@ import tempfile
 import threading
 import time
 import click
-import mapreduce.utils
 
 # Configure logging
 LOGGER = logging.getLogger(__name__)
+
+class Tasks:
+    """Represents a task class."""
+    def __init__(self):
+        self.tasks = collections.defaultdict(list)
+        self.tasks_queue = collections.deque()
+        self.num_tasks = 0
+
+    def get_tasks(self):
+        """Get tasks."""
+        return self.tasks
+
+    def get_tasks_queue(self):
+        """Get tasks queue."""
+        return self.tasks_queue
+
+    def get_num_tasks(self):
+        """Get num tasks."""
+        return self.num_tasks
+
+
+class Workers:
+    """Represents workers data structure."""
+    def __init__(self):
+        self.workers = [] # [ index: (host, port, status, task:dict) ] (status: "r", "b", "d")
+        self.worker_inds = {} # { (worker_host:str, worker_port:int) -> index:int }
+        self.workers_avail = 0
+        self.heartbeat_tracker = {} # { (worker_host:str, worker_port:int) -> time:float }
+
+    def get_workers(self):
+        """Get workers."""
+        return self.workers
+
+    def get_worker_inds(self):
+        """Get worker indexes."""
+        return self.worker_inds
+
+    def get_workers_avail(self):
+        """Get workers available."""
+        return self.workers_avail
+
+    def get_heartbeat_tracker(self):
+        """Get heartbeat tracker."""
+        return self.heartbeat_tracker
 
 
 class Manager:
@@ -24,40 +67,34 @@ class Manager:
 
         LOGGER.info(
             "Manager host=%s port=%s pwd=%s",
-            host, port, os.getcwd(), 
+            host, port, os.getcwd(),
         )
 
-        self.workers = [] # [ index: (host, port, status, task:dict) ] (status: "r", "b", "d")
-        self.worker_inds = {} # { (worker_host:str, worker_port:int) -> index:int }
-        self.workers_avail = 0
-        self.heartbeatTracker = {} # { (worker_host:str, worker_port:int) -> time:float }
-        self.jobs = {} # { job_id:int -> job_info:dict } 
-        self.job_queue = collections.deque() 
+        self.workers = Workers()
+        self.jobs = {} # { job_id:int -> job_info:dict }
+        self.job_queue = collections.deque()
         self.job_id = 0
-        self.tasks = collections.defaultdict(list)
-        self.num_tasks = 0
+        self.tasks = Tasks()
         self.signals = {"shutdown": False}
         self.threads = []
 
-        TCPThread = threading.Thread(target=self.createTCPServer, args=(host, port)) 
-        self.threads.append(TCPThread)
-        UDPThread = threading.Thread(target=self.createUDPServer, args=(host, port)) 
-        self.threads.append(UDPThread)
+        tcp_thread = threading.Thread(target=self.create_tcp_server, args=(host, port))
+        self.threads.append(tcp_thread)
+        udp_thread = threading.Thread(target=self.create_udp_server, args=(host, port))
+        self.threads.append(udp_thread)
 
         LOGGER.info("Start TCP server thread")
-        TCPThread.start()
+        tcp_thread.start()
         LOGGER.info("Start UDP server thread")
-        UDPThread.start() 
-        
-        jobThread = threading.Thread(target=self.assignJobs) 
-        self.threads.append(jobThread)
-        jobThread.start() 
- 
-        TCPThread.join()
-        UDPThread.join()
-        jobThread.join()
+        udp_thread.start()
+        job_thread = threading.Thread(target=self.assign_job)
+        self.threads.append(job_thread)
+        job_thread.start()
+        tcp_thread.join()
+        udp_thread.join()
+        job_thread.join()
 
-    def createTCPServer(self, host, port): 
+    def create_tcp_server(self, host, port):
         """Test TCP Socket Server."""
         # Create an INET, STREAMing socket, this is TCP
         # Note: context manager syntax allows for sockets to automatically be
@@ -77,7 +114,7 @@ class Manager:
                 # Wait for a connection for 1s.  The socket library avoids consuming
                 # CPU while waiting for a connection.
                 try:
-                    clientsocket, address = sock.accept()
+                    clientsocket = sock.accept()[0]
                 except socket.timeout:
                     continue
                 # Socket recv() will block for a maximum of 1 second.  If you omit
@@ -99,7 +136,6 @@ class Manager:
                         if not data:
                             break
                         message_chunks.append(data)
-                
                 # Decode list-of-byte-strings to UTF8 and parse JSON data
                 message_bytes = b''.join(message_chunks)
                 message_str = message_bytes.decode("utf-8")
@@ -108,16 +144,15 @@ class Manager:
                     LOGGER.debug(
                         "TCP recv \n%s", json.dumps(message_dict, indent=2)
                     )
-                    
+
                     if message_dict['message_type'] == 'register':
-                        self.registerWorker(message_dict)
-                        
+                        self.register_worker(message_dict)
                     elif message_dict['message_type'] == 'new_manager_job':
-                        self.handleNewJob(message_dict)
+                        self.handle_new_job(message_dict)
 
                     elif message_dict['message_type'] == 'finished':
-                        self.handleFinishedTask(message_dict)
-                        
+                        self.handle_finished_task(message_dict)
+
                     elif message_dict['message_type'] == 'shutdown':
                         self.shutdown()
 
@@ -125,7 +160,7 @@ class Manager:
                     continue
 
 
-    def createUDPServer(self, host, port): 
+    def create_udp_server(self, host, port):
         """Test UDP Socket Server."""
         # Create an INET, DGRAM socket, this is UDP
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -141,28 +176,25 @@ class Manager:
             # Receive incoming UDP messages
             while not self.signals["shutdown"]:
 
-                for worker in self.heartbeatTracker:
-                    if self.heartbeatTracker[worker] and time.time() - self.heartbeatTracker[worker] > 10:
-                        LOGGER.info(f'Lost connection to worker {worker}')
-                        worker_ind = self.worker_inds[worker]
-                        self.workers[worker_ind][2] = 'd'
-                        self.heartbeatTracker[worker] = None
-                        # TODO: Recirculate failed task back to task queue
-
+                for worker in self.workers.heartbeat_tracker.items():
+                    if worker[1] and \
+                       time.time() - worker[1] > 10:
+                        self.handle_dead_worker(worker[0])
                 try:
                     message_bytes = sock.recv(4096)
                 except socket.timeout:
                     continue
-                
+
                 message_str = message_bytes.decode("utf-8")
                 message_dict = json.loads(message_str)
                 if message_dict['message_type'] == 'heartbeat':
                     worker_host = message_dict['worker_host']
                     worker_port = message_dict['worker_port']
-                    self.heartbeatTracker[(worker_host, worker_port)] = time.time()
+                    self.workers.heartbeat_tracker[(worker_host, worker_port)] = time.time()
 
 
-    def sendTCPMsg(self, host, port, msg): 
+    def send_tcp_msg(self, host, port, msg):
+        """Send a tcp msg."""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             # connect to the server
             sock.connect((host, port))
@@ -174,115 +206,121 @@ class Manager:
                 sock.sendall(msg.encode('utf-8'))
                 return True
             except ConnectionRefusedError:
-                worker_ind = self.worker_inds[(host, port)]
-                self.workers[worker_ind][2] = 'd'
-                self.heartbeatTracker[(host, port)] = None
-                # TODO: Recirculate failed task back to task queue
+                worker = (host, port)
+                self.handle_dead_worker(worker)
                 return False
 
 
-    def assignJobs(self):
+    def assign_job(self):
+        """Handle a new job."""
         while not self.signals['shutdown']:
             if self.job_queue:
                 LOGGER.debug("Starting a job")
                 current_job_id = self.job_queue.popleft()
                 current_job = self.jobs[current_job_id]
-                LOGGER.debug(current_job_id)
-                LOGGER.debug(current_job)
+                LOGGER.debug("Current job id: %s", current_job_id)
+                LOGGER.debug("\n%s", json.dumps(current_job, indent=2))
                 prefix = f"mapreduce-shared-job{current_job_id:05d}-"
                 with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
                     LOGGER.info("Created tmpdir %s", tmpdir)
-                    self.startStage(current_job, False, tmpdir)
-                    self.startStage(current_job, True, tmpdir)
+                    self.start_stage(current_job, False, tmpdir)
+                    self.start_stage(current_job, True, tmpdir)
                 LOGGER.info("Cleaned up tmpdir %s", tmpdir)
 
 
-    def assignTaskToWorkers(self, task):
-        for worker in self.workers: 
+    def assign_task_to_workers(self, task):
+        """Find next ready worker and give them a task."""
+        for worker in self.workers.workers:
             if worker[2] == "r":
                 task['worker_host'] = worker[0]
                 task['worker_port'] = worker[1]
                 worker[3] = task
                 worker[2] = "b"
-                return self.sendTCPMsg(worker[0], worker[1], json.dumps(task, indent=2))
+                return self.send_tcp_msg(worker[0], worker[1], json.dumps(task, indent=2))
         return False
 
 
     # {"message_type": "new_manager_job", "input_directory": ".", "output_directory": "."}
-    def partitionMapTask(self, job):
+    def partition_map_task(self, job):
+        """Partition map tasks."""
         LOGGER.debug("Partitioning map tasks")
         input_dir = job['input_directory']
         num_mappers = job['num_mappers']
         path = pathlib.Path(input_dir)
         files = list(path.glob('*'))
         files.sort()
-        for i in range(len(files)):
-            self.tasks[i % num_mappers].append(str(files[i]))
-        self.num_tasks = len(self.tasks)
+        for i, file in enumerate(files):
+            self.tasks.tasks[i % num_mappers].append(str(file))
 
 
-    def partitionReduceTask(self, input_directory):
+    def partition_reduce_task(self, input_directory):
+        """Partition reduce tasks."""
         LOGGER.debug("Partitioning reduce tasks")
         path = pathlib.Path(input_directory)
         files = list(path.glob('*'))
-        for i in range(len(files)):
-            filename = str(files[i])
+        for file in files:
+            filename = str(file)
             file_num = int(filename[-5:])
-            self.tasks[file_num].append(filename)
-        self.num_tasks = len(self.tasks)
+            self.tasks.tasks[file_num].append(filename)
 
 
-    def registerWorker(self, message_dict): 
+    def register_worker(self, message_dict):
+        """Register worker."""
         worker_host = message_dict['worker_host']
         worker_port = message_dict['worker_port']
         LOGGER.info("Acknowledged new worker on %s:%s", worker_host, worker_port)
-        self.workers.append([worker_host, worker_port, "r", None])
-        self.worker_inds[(worker_host, worker_port)] = len(self.workers) - 1
-        self.workers_avail += 1
+        self.workers.workers.append([worker_host, worker_port, "r", None])
+        self.workers.worker_inds[(worker_host, worker_port)] = len(self.workers.workers) - 1
+        self.workers.workers_avail += 1
         msg = {
-            "message_type": "register_ack", 
-            "worker_host": worker_host, 
-            "worker_port": worker_port 
+            "message_type": "register_ack",
+            "worker_host": worker_host,
+            "worker_port": worker_port
         }
         message_ack = json.dumps(msg, indent=2)
-        
-        self.sendTCPMsg(worker_host, worker_port, message_ack)
+        self.send_tcp_msg(worker_host, worker_port, message_ack)
 
 
-    def handleNewJob(self, message_dict): 
+    def handle_new_job(self, message_dict):
+        """Process incoming job."""
         LOGGER.info("Received new job")
-        self.jobs[self.job_id] = message_dict
-        self.job_queue.append(self.job_id) 
-        LOGGER.debug(self.job_queue)
-        LOGGER.debug(self.jobs)
-        self.job_id += 1
+        output = message_dict['output_directory']
         output = message_dict['output_directory']
         if os.path.exists(output):
-            shutil.rmtree(output)
+            LOGGER.debug("Deleting output directory")
+            shutil.rmtree(output, ignore_errors=True)
         os.mkdir(output)
-        LOGGER.debug(f'Created new dir: {output}')
+        LOGGER.debug("Created new dir: %s", output)
+        self.jobs[self.job_id] = message_dict
+        self.job_queue.append(self.job_id)
+        self.job_id += 1
 
 
-    def handleFinishedTask(self, message_dict): 
+    def handle_finished_task(self, message_dict):
+        """Process finished task from worker."""
         worker_host = message_dict['worker_host']
         worker_port = message_dict['worker_port']
-        worker_ind = self.worker_inds[(worker_host, worker_port)]
-        self.workers[worker_ind][2] = 'r'
-        self.workers[worker_ind][3] = None
-        self.workers_avail += 1
-        self.num_tasks -= 1
+        worker_ind = self.workers.worker_inds[(worker_host, worker_port)]
+        self.workers.workers[worker_ind][2] = 'r'
+        self.workers.workers[worker_ind][3] = None
+        self.workers.workers_avail += 1
+        self.tasks.num_tasks -= 1
+        LOGGER.debug("Worker %s:%s ready to accept jobs", worker_host, worker_port)
 
 
-    def shutdown(self): 
+    def shutdown(self):
+        """Shutdown manager and workers."""
         LOGGER.debug("Received shutdown")
-        for worker in self.workers:
-            msg = json.dumps({"message_type": "shutdown"})
-            self.sendTCPMsg(worker[0], worker[1], msg)
+        for worker in self.workers.workers:
+            if worker[2] != 'd':
+                msg = json.dumps({"message_type": "shutdown"})
+                self.send_tcp_msg(worker[0], worker[1], msg)
         LOGGER.debug("Shutting down")
         self.signals['shutdown'] = True
 
 
-    def assignTasks(self, job, reduce, tempdir): 
+    def assign_tasks(self, job, reduce, tempdir):
+        """Assign tasks to workers."""
         LOGGER.debug("Assigning tasks")
         num_reducers = job['num_reducers']
         if reduce:
@@ -291,18 +329,16 @@ class Manager:
         else:
             executable = job['mapper_executable']
             output_dir = tempdir
-
-        task_id = 0                     
-        LOGGER.debug("Start handing out tasks")
-        while not self.signals['shutdown'] and self.tasks:
+        while not self.signals['shutdown'] and self.tasks.tasks_queue:
             # LOGGER.debug(self.tasks)
-            if self.workers_avail > 0:
+            if self.workers.workers_avail > 0:
+                task_id = self.tasks.tasks_queue[0]
                 if reduce:
                     task_message = {
                         "message_type": "new_reduce_task",
                         "task_id": task_id,
                         "executable": executable,
-                        "input_paths": self.tasks[task_id],
+                        "input_paths": self.tasks.tasks[task_id],
                         "output_directory": output_dir,
                         "worker_host": None,
                         "worker_port": None
@@ -312,30 +348,55 @@ class Manager:
                         "message_type": "new_map_task",
                         "task_id": task_id,
                         "executable": executable,
-                        "input_paths": self.tasks[task_id],
+                        "input_paths": self.tasks.tasks[task_id],
                         "output_directory": output_dir,
                         "num_partitions": num_reducers,
                         "worker_host": None,
                         "worker_port": None
                     }
-                if self.assignTaskToWorkers(task_message):
-                    self.tasks.pop(task_id)
-                    task_id += 1
-                    self.workers_avail -= 1
+                if self.assign_task_to_workers(task_message):
+                    self.tasks.tasks_queue.popleft()
+                    self.tasks.tasks.pop(task_id)
+                    self.workers.workers_avail -= 1
 
-    
-    def startStage(self, job, reduce, tmpdir): 
-        if reduce: 
-            self.partitionReduceTask(tmpdir) 
+
+    def start_stage(self, job, reduce, tmpdir):
+        """Start map or reduce stage."""
+        if reduce:
+            self.partition_reduce_task(tmpdir)
             stage = "reduce"
+            for i in range(job['num_reducers']):
+                self.tasks.tasks_queue.append(i)
         else:
-            self.partitionMapTask(job)
+            self.partition_map_task(job)
             stage = "map"
-        while not self.signals['shutdown'] and self.num_tasks != 0:
-            LOGGER.info("Begin %s stage", stage)
-            self.assignTasks(job, reduce, tmpdir)
+            for i in range(job['num_mappers']):
+                self.tasks.tasks_queue.append(i)
+        self.tasks.num_tasks = len(self.tasks.tasks_queue)
+        # LOGGER.debug(self.tasks_queue)
+        LOGGER.info("Begin %s stage", stage)
+        while not self.signals['shutdown'] and self.tasks.num_tasks != 0:
+            self.assign_tasks(job, reduce, tmpdir)
             LOGGER.debug("Waiting on %s to finish...", stage)
             time.sleep(2)
+
+
+    def handle_dead_worker(self, worker):
+        """Process dead workers."""
+        LOGGER.info("Lost connection to worker %s:%s", worker[0], worker[1])
+        worker_ind = self.workers.worker_inds[worker]
+        LOGGER.debug("Worker index: %s", worker_ind)
+        if self.workers.workers[worker_ind][2] == 'r':
+            self.workers.workers_avail -= 1
+        elif self.workers.workers[worker_ind][2] == 'b':
+            LOGGER.debug('REASSIGN DEAD WORKER TASK')
+            task = self.workers.workers[worker_ind][3]
+            task_id = task['task_id']
+            self.tasks.tasks_queue.append(task_id)
+            self.tasks.tasks[task_id] = task['input_paths']
+        self.workers.workers[worker_ind][2] = 'd'
+        self.workers.workers[worker_ind][3] = None
+        self.workers.heartbeat_tracker[worker] = None
 
 
 @click.command()
@@ -363,12 +424,3 @@ def main(host, port, logfile, loglevel, shared_dir):
 
 if __name__ == "__main__":
     main()
-
-
-# mapreduce-submit \
-#     --input tests/testdata/input_small \
-#     --output output \
-#     --mapper tests/testdata/exec/wc_map.sh \
-#     --reducer tests/testdata/exec/wc_reduce.sh \
-#     --nmappers 2 \
-#     --nreducers 2

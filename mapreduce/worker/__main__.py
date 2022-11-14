@@ -1,10 +1,8 @@
 """MapReduce framework Worker node."""
-import click
 import hashlib
 import heapq
 import json
 import logging
-import mapreduce.utils
 import os
 import pathlib
 import shutil
@@ -14,6 +12,7 @@ import tempfile
 import threading
 import time
 import contextlib
+import click
 
 # Configure logging
 LOGGER = logging.getLogger(__name__)
@@ -34,12 +33,12 @@ class Worker:
         self.signals = {"shutdown": False}
         self.threads = []
 
-        TCPThread = threading.Thread(
-            target=self.createTCPServer, args=(host, port))
-        self.threads.append(TCPThread)
+        tcp_thread = threading.Thread(
+            target=self.create_tcp_server, args=(host, port))
+        self.threads.append(tcp_thread)
 
         LOGGER.info("Start TCP server thread")
-        TCPThread.start()
+        tcp_thread.start()
 
         # create an INET, STREAMing socket, this is TCP
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -56,31 +55,31 @@ class Worker:
             )
             sock.sendall(message.encode('utf-8'))
 
-        for thread in self.threads: 
+        for thread in self.threads:
             thread.join()
 
 
-    def createTCPServer(self, host, port):
+    def create_tcp_server(self, host, port):
         """Test TCP Socket Server."""
         # Create an INET, STREAMing socket, this is TCP
         # Note: context manager syntax allows for sockets to automatically be
         # closed when an exception is raised or control flow returns.
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock_1:
             # Bind the socket to the server
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock_1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             LOGGER.debug(
                 "TCP bind %s:%s", host, port
             )
-            sock.bind((host, port))
-            sock.listen()
+            sock_1.bind((host, port))
+            sock_1.listen()
             # Socket accept() will block for a maximum of 1 second.  If you
             # omit this, it blocks indefinitely, waiting for a connection.
-            sock.settimeout(1)
+            sock_1.settimeout(1)
             while not self.signals["shutdown"]:
                 # Wait for a connection for 1s.  The socket library avoids consuming
                 # CPU while waiting for a connection.
                 try:
-                    clientsocket, address = sock.accept()
+                    clientsocket = sock_1.accept()[0]
                 except socket.timeout:
                     continue
                 # Socket recv() will block for a maximum of 1 second.  If you omit
@@ -93,18 +92,18 @@ class Worker:
                 # assumption that the client will always cleanly close the
                 # connection.
                 with clientsocket:
-                    message_chunks = []
+                    message_chunks_1 = []
                     while True:
                         try:
-                            data = clientsocket.recv(4096)
+                            data_1 = clientsocket.recv(4096)
                         except socket.timeout:
                             continue
-                        if not data:
+                        if not data_1:
                             break
-                        message_chunks.append(data)
+                        message_chunks_1.append(data_1)
 
                 # Decode list-of-byte-strings to UTF8 and parse JSON data
-                message_bytes = b''.join(message_chunks)
+                message_bytes = b''.join(message_chunks_1)
                 message_str = message_bytes.decode("utf-8")
                 try:
                     message_dict = json.loads(message_str)
@@ -113,44 +112,45 @@ class Worker:
                     )
 
                     if message_dict['message_type'] == 'register_ack':
-                        UDPThread = threading.Thread(
-                            target=self.sendHeartbeat, args=(host, port))
-                        self.threads.append(UDPThread)
+                        udp_thread = threading.Thread(
+                            target=self.send_heartbeat, args=(host, port))
+                        self.threads.append(udp_thread)
 
                         LOGGER.info("Starting heartbeat thread")
-                        UDPThread.start()
-                        
+                        udp_thread.start()
+
                     elif message_dict['message_type'] == 'new_map_task':
+                        LOGGER.debug("Received map job")
                         map_task = threading.Thread(
-                            target=self.startMapTask, args=(message_dict,))
+                            target=self.start_map_task, args=(message_dict,))
                         self.threads.append(map_task)
 
                         LOGGER.info("Starting mapper thread")
                         map_task.start()
                         map_task.join()
-                        
+
                     elif message_dict['message_type'] == 'new_reduce_task':
                         reduce_task = threading.Thread(
-                            target=self.startReduceTask, args=(message_dict,))
+                            target=self.start_reduce_task, args=(message_dict,))
                         self.threads.append(reduce_task)
 
                         LOGGER.info("Starting reduce thread")
                         reduce_task.start()
                         reduce_task.join()
-                        
+
                     elif message_dict['message_type'] == 'shutdown':
                         self.signals['shutdown'] = True
-                    
+
                 except json.JSONDecodeError:
                     continue
 
 
-    def sendHeartbeat(self, host, port):
+    def send_heartbeat(self, host, port):
         """Test UDP Socket Client."""
         # Create an INET, DGRAM socket, this is UDP
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             # Connect to the UDP socket on server
-            sock.connect(("localhost", 6000))
+            sock.connect((self.manager_host, self.manager_port))
             # Send a message
             while not self.signals['shutdown']:
                 message = json.dumps(
@@ -159,67 +159,69 @@ class Worker:
                 time.sleep(2)
 
 
-    def startMapTask(self, message_dict):
-        executable = message_dict['executable']
-        input_paths = message_dict['input_paths']
+    def hash_word(self, word, mod):
+        """Hash word"""
+        hexdigest = hashlib.md5(
+            word.encode("utf-8")).hexdigest()
+        keyhash = int(hexdigest, base=16)
+        return keyhash % mod
 
+
+    def start_map_task(self, message_dict):
+        """Start map task"""
         task_id = message_dict['task_id']
-        prefix = f'mapreduce-local-task{task_id:05d}-'
 
         # Temporary directory for map output files
-        with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
-            for file in input_paths:
-                with open(file) as infile:
+        with tempfile.TemporaryDirectory(prefix=f'mapreduce-local-task{task_id:05d}-') as tmpdir:
+            for file in message_dict['input_paths']:
+                with open(file, encoding='utf-8') as infile:
                     # Run executable on input file and pipe output to memory
                     with subprocess.Popen(
-                        [executable],
+                        [message_dict['executable']],
                         stdin=infile,
                         stdout=subprocess.PIPE,
                         text=True,
                     ) as map_process:
                         # Organize matching keys to same files for reduce
                         for line in map_process.stdout:
-                            # LOGGER.info(line)
-                            word = line.split('\t')[0]
-                            hexdigest = hashlib.md5(
-                                word.encode("utf-8")).hexdigest()
-                            keyhash = int(hexdigest, base=16)
-                            partition = keyhash % message_dict['num_partitions']
+                            partition = self.hash_word(
+                                line.split('\t')[0],
+                                message_dict['num_partitions'])
 
-                            filename = f'maptask{task_id:05d}-part{partition:05d}'
-                            filepath = os.path.join(tmpdir, filename)
-                            with open(filepath, "a") as f:
-                                f.write(line)
-            temp_output_path = pathlib.Path(tmpdir)
-            temp_output_files = list(temp_output_path.glob('*'))
+                            filepath = os.path.join(tmpdir,
+                                f'maptask{task_id:05d}-part{partition:05d}')
+                            with open(filepath, "a", encoding='utf-8') as writefile:
+                                writefile.write(line)
+
+            temp_output_files = list(pathlib.Path(tmpdir).glob('*'))
+
             # Sort keys within individual files and copy files to output directory
             for file in temp_output_files:
                 lines = []
-                with open(file, "r") as f:
-                    lines = f.readlines()
+                with open(file, 'r', encoding='utf-8') as readfile:
+                    lines = readfile.readlines()
                     lines.sort()
-                output_path = pathlib.Path(message_dict['output_directory'])
-                filename = os.path.basename(file).split('/')[-1]
-                output_file = os.path.join(output_path, filename)
-                LOGGER.debug(output_file)
-                with open(output_file, "w") as f:
-                    f.writelines(lines)
 
-            message = json.dumps({
+                output_file = os.path.join(
+                    pathlib.Path(message_dict['output_directory']),
+                    os.path.basename(file).split('/')[-1])
+                with open(output_file, 'w', encoding='utf-8') as writefile:
+                    writefile.writelines(lines)
+
+            self.send_tcp_msg(self.manager_host, self.manager_port, json.dumps({
                 "message_type": "finished",
                 "task_id": task_id,
                 "worker_host": message_dict['worker_host'],
                 "worker_port": message_dict['worker_port']
-            })
-            self.sendTCPMsg(self.manager_host, self.manager_port, message)
+            }))
 
 
-    def startReduceTask(self, message_dict):
+    def start_reduce_task(self, message_dict):
+        """Start reduce task."""
         input_paths = message_dict['input_paths']
 
-        files = []
         with contextlib.ExitStack() as stack:
-            files = [stack.enter_context(open(input)) for input in input_paths]
+            files = [stack.enter_context(open(input, encoding='utf-8')) for input in input_paths]
             # All opened files will automatically be closed at the end of
             # the with statement, even if attempts to open files later
             # in the list raise an exception
@@ -231,22 +233,19 @@ class Worker:
             prefix = f'mapreduce-local-task{task_id:05d}-'
             LOGGER.debug(prefix)
             with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
-                file = f'part-{task_id:05d}'
-                filepath = os.path.join(tmpdir, file)
+                filepath = os.path.join(tmpdir, f'part-{task_id:05d}')
 
-                with open(filepath, 'w') as f:
+                with open(filepath, 'w', encoding='utf-8') as writefile:
                     with subprocess.Popen(
                         [executable],
                         text=True,
                         stdin=subprocess.PIPE,
-                        stdout=f,
+                        stdout=writefile,
                     ) as reduce_process:
                         for line in instream:
                             reduce_process.stdin.write(line)
-                
-                output_path = message_dict['output_directory']
-                shutil.move(filepath, output_path)
-                LOGGER.info(output_path)
+
+                shutil.move(filepath, message_dict['output_directory'])
 
             message = json.dumps({
                 "message_type": "finished",
@@ -254,10 +253,11 @@ class Worker:
                 "worker_host": message_dict['worker_host'],
                 "worker_port": message_dict['worker_port']
             })
-            self.sendTCPMsg(self.manager_host, self.manager_port, message)
+            self.send_tcp_msg(self.manager_host, self.manager_port, message)
 
 
-    def sendTCPMsg(self, host, port, msg):
+    def send_tcp_msg(self, host, port, msg):
+        """Send TCP message."""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             # connect to the server
             sock.connect((host, port))
