@@ -181,26 +181,29 @@ class Worker:
         # Temporary directory for map output files
         prefix = f'mapreduce-local-task{task_id:05d}-'
         with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
-            for file in message_dict['input_paths']:
-                with open(file, encoding='utf-8') as infile:
-                    # Run executable on input file and pipe output to memory
-                    with subprocess.Popen(
-                        [message_dict['executable']],
-                        stdin=infile,
-                        stdout=subprocess.PIPE,
-                        text=True,
-                    ) as map_process:
-                        # Organize matching keys to same files for reduce
-                        for line in map_process.stdout:
-                            part = self.hash_word(
-                                line.split('\t')[0],
-                                message_dict['num_partitions'])
+            with contextlib.ExitStack() as stk:
+                files = {}
+                for file in message_dict['input_paths']:
+                    with open(file, encoding='utf-8') as infile:
+                        # Run executable on input file and pipe output to memory
+                        with subprocess.Popen(
+                            [message_dict['executable']],
+                            stdin=infile,
+                            stdout=subprocess.PIPE,
+                            text=True,
+                        ) as map_process:
+                            # Organize matching keys to same files for reduce
+                            for line in map_process.stdout:
+                                part = self.hash_word(
+                                    line.split('\t')[0],
+                                    message_dict['num_partitions'])
 
-                            tmp_name = f'maptask{task_id:05d}-part{part:05d}'
-                            f_path = os.path.join(tmpdir, tmp_name)
-                            with open(f_path, "a", encoding='utf-8') as w_file:
-                                w_file.write(line)
-
+                                tmp_name = f'maptask{task_id:05d}-part{part:05d}'
+                                f_path = os.path.join(tmpdir, tmp_name)
+                                if part not in files:
+                                    files[part] = stk.enter_context(open(f_path, "a", encoding='utf-8'))
+                                files[part].write(line)
+                                
             temp_output_files = list(pathlib.Path(tmpdir).glob('*'))
 
             self.sort_files(temp_output_files, message_dict)

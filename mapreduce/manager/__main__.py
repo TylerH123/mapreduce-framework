@@ -261,7 +261,7 @@ class Manager:
         num_mappers = job['num_mappers']
         path = pathlib.Path(input_dir)
         files = list(path.glob('*'))
-        # files.sort()
+        files.sort()
         for i, file in enumerate(files):
             self.tasks.tasks[i % num_mappers].append(str(file))
 
