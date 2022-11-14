@@ -52,7 +52,26 @@ stop() {
 }
 
 status() {
-    echo "status"
+    manager_running=true
+    workers_running=true
+    if pgrep -f mapreduce-manager &> /dev/null; then
+        echo "manager running"
+    else
+        echo "manager not running"
+        manager_running=false
+    fi
+    if pgrep -f mapreduce-worker &> /dev/null; then
+        echo "workers running"
+    else
+        echo "workers not running"
+        workers_running=false
+    fi
+    if $manager_running && $workers_running; then
+        exit 0
+    else
+        exit 1
+    fi
+
 }
 
 case $1 in
