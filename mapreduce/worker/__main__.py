@@ -45,19 +45,23 @@ class Worker:
             # connect to the server
             sock.connect((manager_host, manager_port))
             # send a message
-            message = json.dumps(
-                {"message_type": "register", "worker_host": host, "worker_port": port}, indent=2)
+            msg = {
+                "message_type": "register",
+                "worker_host": host,
+                "worker_port": port
+            }
+            message = json.dumps(msg, indent=2)
             LOGGER.debug(
                 "TCP send to %s:%s \n%s", manager_host, manager_port, message
             )
             LOGGER.info(
-                "Sent connection request to Manager %s:%s", manager_host, manager_port
+                "Sent connection request to Manager %s:%s",
+                manager_host, manager_port
             )
             sock.sendall(message.encode('utf-8'))
 
         for thread in self.threads:
             thread.join()
-
 
     def create_tcp_server(self, host, port):
         """Test TCP Socket Server."""
@@ -76,21 +80,23 @@ class Worker:
             # omit this, it blocks indefinitely, waiting for a connection.
             sock_1.settimeout(1)
             while not self.signals["shutdown"]:
-                # Wait for a connection for 1s.  The socket library avoids consuming
+                # Wait for a connection for 1s.
+                # The socket library avoids consuming
                 # CPU while waiting for a connection.
                 try:
                     clientsocket = sock_1.accept()[0]
                 except socket.timeout:
                     continue
-                # Socket recv() will block for a maximum of 1 second.  If you omit
-                # this, it blocks indefinitely, waiting for packets.
-                clientsocket.settimeout(1)
-                # Receive data, one chunk at a time.  If recv() times out before we
-                # can read a chunk, then go back to the top of the loop and try
-                # again.  When the client closes the connection, recv() returns
-                # empty data, which breaks out of the loop.  We make a simplifying
+                # Receive data, one chunk at a time.
+                # If recv() times out before we can read a chunk,
+                # then go back to the top of the loop and try
+                # again.
+                # When the client closes the connection,
+                # recv() returns empty data,
+                # which breaks out of the loop. We make a simplifying
                 # assumption that the client will always cleanly close the
                 # connection.
+                clientsocket.settimeout(1)
                 with clientsocket:
                     message_chunks_1 = []
                     while True:
@@ -131,7 +137,8 @@ class Worker:
 
                     elif message_dict['message_type'] == 'new_reduce_task':
                         reduce_task = threading.Thread(
-                            target=self.start_reduce_task, args=(message_dict,))
+                            target=self.start_reduce_task,
+                            args=(message_dict,))
                         self.threads.append(reduce_task)
 
                         LOGGER.info("Starting reduce thread")
@@ -144,7 +151,6 @@ class Worker:
                 except json.JSONDecodeError:
                     continue
 
-
     def send_heartbeat(self, host, port):
         """Test UDP Socket Client."""
         # Create an INET, DGRAM socket, this is UDP
@@ -153,26 +159,28 @@ class Worker:
             sock.connect((self.manager_host, self.manager_port))
             # Send a message
             while not self.signals['shutdown']:
-                message = json.dumps(
-                    {"message_type": "heartbeat", "worker_host": host, "worker_port": port})
+                message = json.dumps({
+                    "message_type": "heartbeat",
+                    "worker_host": host,
+                    "worker_port": port
+                })
                 sock.sendall(message.encode('utf-8'))
                 time.sleep(2)
 
-
     def hash_word(self, word, mod):
-        """Hash word"""
+        """Hash word."""
         hexdigest = hashlib.md5(
             word.encode("utf-8")).hexdigest()
         keyhash = int(hexdigest, base=16)
         return keyhash % mod
 
-
     def start_map_task(self, message_dict):
-        """Start map task"""
+        """Start map task."""
         task_id = message_dict['task_id']
 
         # Temporary directory for map output files
-        with tempfile.TemporaryDirectory(prefix=f'mapreduce-local-task{task_id:05d}-') as tmpdir:
+        prefix = f'mapreduce-local-task{task_id:05d}-'
+        with tempfile.TemporaryDirectory(prefix=prefix) as tmpdir:
             for file in message_dict['input_paths']:
                 with open(file, encoding='utf-8') as infile:
                     # Run executable on input file and pipe output to memory
@@ -184,44 +192,28 @@ class Worker:
                     ) as map_process:
                         # Organize matching keys to same files for reduce
                         for line in map_process.stdout:
-                            partition = self.hash_word(
+                            part = self.hash_word(
                                 line.split('\t')[0],
                                 message_dict['num_partitions'])
 
-                            filepath = os.path.join(tmpdir,
-                                f'maptask{task_id:05d}-part{partition:05d}')
-                            with open(filepath, "a", encoding='utf-8') as writefile:
-                                writefile.write(line)
+                            tmp_name = f'maptask{task_id:05d}-part{part:05d}'
+                            f_path = os.path.join(tmpdir, tmp_name)
+                            with open(f_path, "a", encoding='utf-8') as w_file:
+                                w_file.write(line)
 
             temp_output_files = list(pathlib.Path(tmpdir).glob('*'))
 
-            # Sort keys within individual files and copy files to output directory
-            for file in temp_output_files:
-                lines = []
-                with open(file, 'r', encoding='utf-8') as readfile:
-                    lines = readfile.readlines()
-                    lines.sort()
-
-                output_file = os.path.join(
-                    pathlib.Path(message_dict['output_directory']),
-                    os.path.basename(file).split('/')[-1])
-                with open(output_file, 'w', encoding='utf-8') as writefile:
-                    writefile.writelines(lines)
-
-            self.send_tcp_msg(self.manager_host, self.manager_port, json.dumps({
-                "message_type": "finished",
-                "task_id": task_id,
-                "worker_host": message_dict['worker_host'],
-                "worker_port": message_dict['worker_port']
-            }))
-
+            self.sort_files(temp_output_files, message_dict)
+            self.finish_task(task_id, message_dict)
 
     def start_reduce_task(self, message_dict):
         """Start reduce task."""
         input_paths = message_dict['input_paths']
 
-        with contextlib.ExitStack() as stack:
-            files = [stack.enter_context(open(input, encoding='utf-8')) for input in input_paths]
+        with contextlib.ExitStack() as stk:
+            files = []
+            for inp in input_paths:
+                files.append(stk.enter_context(open(inp, encoding='utf-8')))
             # All opened files will automatically be closed at the end of
             # the with statement, even if attempts to open files later
             # in the list raise an exception
@@ -246,15 +238,7 @@ class Worker:
                             reduce_process.stdin.write(line)
 
                 shutil.move(filepath, message_dict['output_directory'])
-
-            message = json.dumps({
-                "message_type": "finished",
-                "task_id": task_id,
-                "worker_host": message_dict['worker_host'],
-                "worker_port": message_dict['worker_port']
-            })
-            self.send_tcp_msg(self.manager_host, self.manager_port, message)
-
+            self.finish_task(message_dict['task_id'], message_dict)
 
     def send_tcp_msg(self, host, port, msg):
         """Send TCP message."""
@@ -266,6 +250,32 @@ class Worker:
                 "TCP send to %s:%s \n%s", host, port, msg
             )
             sock.sendall(msg.encode('utf-8'))
+
+    def finish_task(self, task_id, message_dict):
+        """Send finish msg to manager."""
+        msg = {
+            "message_type": "finished",
+            "task_id": task_id,
+            "worker_host": message_dict['worker_host'],
+            "worker_port": message_dict['worker_port']
+        }
+        self.send_tcp_msg(self.manager_host, self.manager_port,
+                          json.dumps(msg, indent=2))
+
+    def sort_files(self, temp_output_files, message_dict):
+        """Sort keys within individual files."""
+        # copy files to output directory
+        for file in temp_output_files:
+            lines = []
+            with open(file, 'r', encoding='utf-8') as readfile:
+                lines = readfile.readlines()
+                lines.sort()
+
+            output_file = os.path.join(
+                pathlib.Path(message_dict['output_directory']),
+                os.path.basename(file).split('/')[-1])
+            with open(output_file, 'w', encoding='utf-8') as writefile:
+                writefile.writelines(lines)
 
 
 @click.command()

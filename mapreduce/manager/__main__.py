@@ -14,9 +14,12 @@ import click
 # Configure logging
 LOGGER = logging.getLogger(__name__)
 
+
 class Tasks:
     """Represents a task class."""
+
     def __init__(self):
+        """Initialize task class."""
         self.tasks = collections.defaultdict(list)
         self.tasks_queue = collections.deque()
         self.num_tasks = 0
@@ -36,11 +39,16 @@ class Tasks:
 
 class Workers:
     """Represents workers data structure."""
+
     def __init__(self):
-        self.workers = [] # [ index: (host, port, status, task:dict) ] (status: "r", "b", "d")
-        self.worker_inds = {} # { (worker_host:str, worker_port:int) -> index:int }
+        """Initialize worker class."""
+        # [ index: (host, port, status, task:dict) ] (status: "r", "b", "d")
+        self.workers = []
+        # { (worker_host:str, worker_port:int) -> index:int }
+        self.worker_inds = {}
         self.workers_avail = 0
-        self.heartbeat_tracker = {} # { (worker_host:str, worker_port:int) -> time:float }
+        # { (worker_host:str, worker_port:int) -> time:float }
+        self.heartbeat_tracker = {}
 
     def get_workers(self):
         """Get workers."""
@@ -64,23 +72,25 @@ class Manager:
 
     def __init__(self, host, port):
         """Construct a Manager instance and start listening for messages."""
-
         LOGGER.info(
             "Manager host=%s port=%s pwd=%s",
             host, port, os.getcwd(),
         )
 
         self.workers = Workers()
-        self.jobs = {} # { job_id:int -> job_info:dict }
+        # { job_id:int -> job_info:dict }
+        self.jobs = {}
         self.job_queue = collections.deque()
         self.job_id = 0
         self.tasks = Tasks()
         self.signals = {"shutdown": False}
         self.threads = []
 
-        tcp_thread = threading.Thread(target=self.create_tcp_server, args=(host, port))
+        tcp_thread = threading.Thread(target=self.create_tcp_server,
+                                      args=(host, port))
         self.threads.append(tcp_thread)
-        udp_thread = threading.Thread(target=self.create_udp_server, args=(host, port))
+        udp_thread = threading.Thread(target=self.create_udp_server,
+                                      args=(host, port))
         self.threads.append(udp_thread)
 
         LOGGER.info("Start TCP server thread")
@@ -111,19 +121,24 @@ class Manager:
             # omit this, it blocks indefinitely, waiting for a connection.
             sock.settimeout(1)
             while not self.signals["shutdown"]:
-                # Wait for a connection for 1s.  The socket library avoids consuming
+                # Wait for a connection for 1s.
+                # The socket library avoids consuming
                 # CPU while waiting for a connection.
                 try:
                     clientsocket = sock.accept()[0]
                 except socket.timeout:
                     continue
-                # Socket recv() will block for a maximum of 1 second.  If you omit
-                # this, it blocks indefinitely, waiting for packets.
+                # Socket recv() will block for a maximum of 1 second.
+                # If you omit this, it blocks indefinitely,
+                # waiting for packets.
                 clientsocket.settimeout(1)
-                # Receive data, one chunk at a time.  If recv() times out before we
-                # can read a chunk, then go back to the top of the loop and try
-                # again.  When the client closes the connection, recv() returns
-                # empty data, which breaks out of the loop.  We make a simplifying
+                # Receive data, one chunk at a time.
+                # If recv() times out before we can read a chunk,
+                # then go back to the top of the loop and try
+                # again.
+                # When the client closes the connection,
+                # recv() returns empty data,
+                # which breaks out of the loop. We make a simplifying
                 # assumption that the client will always cleanly close the
                 # connection.
                 with clientsocket:
@@ -159,7 +174,6 @@ class Manager:
                 except json.JSONDecodeError:
                     continue
 
-
     def create_udp_server(self, host, port):
         """Test UDP Socket Server."""
         # Create an INET, DGRAM socket, this is UDP
@@ -190,8 +204,8 @@ class Manager:
                 if message_dict['message_type'] == 'heartbeat':
                     worker_host = message_dict['worker_host']
                     worker_port = message_dict['worker_port']
-                    self.workers.heartbeat_tracker[(worker_host, worker_port)] = time.time()
-
+                    worker = (worker_host, worker_port)
+                    self.workers.heartbeat_tracker[worker] = time.time()
 
     def send_tcp_msg(self, host, port, msg):
         """Send a tcp msg."""
@@ -210,7 +224,6 @@ class Manager:
                 self.handle_dead_worker(worker)
                 return False
 
-
     def assign_job(self):
         """Handle a new job."""
         while not self.signals['shutdown']:
@@ -226,7 +239,8 @@ class Manager:
                     self.start_stage(current_job, False, tmpdir)
                     self.start_stage(current_job, True, tmpdir)
                 LOGGER.info("Cleaned up tmpdir %s", tmpdir)
-
+            else:
+                time.sleep(1)
 
     def assign_task_to_workers(self, task):
         """Find next ready worker and give them a task."""
@@ -236,11 +250,10 @@ class Manager:
                 task['worker_port'] = worker[1]
                 worker[3] = task
                 worker[2] = "b"
-                return self.send_tcp_msg(worker[0], worker[1], json.dumps(task, indent=2))
+                return self.send_tcp_msg(worker[0], worker[1],
+                                         json.dumps(task, indent=2))
         return False
 
-
-    # {"message_type": "new_manager_job", "input_directory": ".", "output_directory": "."}
     def partition_map_task(self, job):
         """Partition map tasks."""
         LOGGER.debug("Partitioning map tasks")
@@ -252,7 +265,6 @@ class Manager:
         for i, file in enumerate(files):
             self.tasks.tasks[i % num_mappers].append(str(file))
 
-
     def partition_reduce_task(self, input_directory):
         """Partition reduce tasks."""
         LOGGER.debug("Partitioning reduce tasks")
@@ -263,14 +275,15 @@ class Manager:
             file_num = int(filename[-5:])
             self.tasks.tasks[file_num].append(filename)
 
-
     def register_worker(self, message_dict):
         """Register worker."""
         worker_host = message_dict['worker_host']
         worker_port = message_dict['worker_port']
-        LOGGER.info("Acknowledged new worker on %s:%s", worker_host, worker_port)
+        LOGGER.info("Acknowledged new worker on %s:%s",
+                    worker_host, worker_port)
         self.workers.workers.append([worker_host, worker_port, "r", None])
-        self.workers.worker_inds[(worker_host, worker_port)] = len(self.workers.workers) - 1
+        worker_id = len(self.workers.workers) - 1
+        self.workers.worker_inds[(worker_host, worker_port)] = worker_id
         self.workers.workers_avail += 1
         msg = {
             "message_type": "register_ack",
@@ -279,7 +292,6 @@ class Manager:
         }
         message_ack = json.dumps(msg, indent=2)
         self.send_tcp_msg(worker_host, worker_port, message_ack)
-
 
     def handle_new_job(self, message_dict):
         """Process incoming job."""
@@ -295,7 +307,6 @@ class Manager:
         self.job_queue.append(self.job_id)
         self.job_id += 1
 
-
     def handle_finished_task(self, message_dict):
         """Process finished task from worker."""
         worker_host = message_dict['worker_host']
@@ -305,8 +316,8 @@ class Manager:
         self.workers.workers[worker_ind][3] = None
         self.workers.workers_avail += 1
         self.tasks.num_tasks -= 1
-        LOGGER.debug("Worker %s:%s ready to accept jobs", worker_host, worker_port)
-
+        LOGGER.debug("Worker %s:%s ready to accept jobs",
+                     worker_host, worker_port)
 
     def shutdown(self):
         """Shutdown manager and workers."""
@@ -317,7 +328,6 @@ class Manager:
                 self.send_tcp_msg(worker[0], worker[1], msg)
         LOGGER.debug("Shutting down")
         self.signals['shutdown'] = True
-
 
     def assign_tasks(self, job, reduce, tempdir):
         """Assign tasks to workers."""
@@ -358,7 +368,8 @@ class Manager:
                     self.tasks.tasks_queue.popleft()
                     self.tasks.tasks.pop(task_id)
                     self.workers.workers_avail -= 1
-
+            else:
+                time.sleep(1)
 
     def start_stage(self, job, reduce, tmpdir):
         """Start map or reduce stage."""
@@ -378,8 +389,7 @@ class Manager:
         while not self.signals['shutdown'] and self.tasks.num_tasks != 0:
             self.assign_tasks(job, reduce, tmpdir)
             LOGGER.debug("Waiting on %s to finish...", stage)
-            time.sleep(2)
-
+            time.sleep(1)
 
     def handle_dead_worker(self, worker):
         """Process dead workers."""

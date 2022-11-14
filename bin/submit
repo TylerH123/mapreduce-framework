@@ -1,0 +1,9 @@
+#!/bin/bash
+
+tar \
+  --exclude '*__pycache__*' \
+  --exclude '*tmp*' \
+  -czvf submit.tar.gz \
+  pyproject.toml \
+  bin \
+  mapreduce
