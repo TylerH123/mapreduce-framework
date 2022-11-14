@@ -185,7 +185,7 @@ class Worker:
                 files = {}
                 for file in message_dict['input_paths']:
                     with open(file, encoding='utf-8') as infile:
-                        # Run executable on input file and pipe output to memory
+                        # Run executable on input and pipe output to memory
                         with subprocess.Popen(
                             [message_dict['executable']],
                             stdin=infile,
@@ -198,12 +198,14 @@ class Worker:
                                     line.split('\t')[0],
                                     message_dict['num_partitions'])
 
-                                tmp_name = f'maptask{task_id:05d}-part{part:05d}'
+                                tmp_name = \
+                                    f'maptask{task_id:05d}-part{part:05d}'
                                 f_path = os.path.join(tmpdir, tmp_name)
                                 if part not in files:
-                                    files[part] = stk.enter_context(open(f_path, "a", encoding='utf-8'))
+                                    files[part] = stk.enter_context(
+                                        open(f_path, "a", encoding='utf-8'))
                                 files[part].write(line)
-                                
+
             temp_output_files = list(pathlib.Path(tmpdir).glob('*'))
 
             self.sort_files(temp_output_files, message_dict)
