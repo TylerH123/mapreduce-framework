@@ -239,8 +239,8 @@ class Manager:
                     self.start_stage(current_job, False, tmpdir)
                     self.start_stage(current_job, True, tmpdir)
                 LOGGER.info("Cleaned up tmpdir %s", tmpdir)
-            else:
-                time.sleep(1)
+            # else:
+            #     time.sleep(1)
 
     def assign_task_to_workers(self, task):
         """Find next ready worker and give them a task."""
@@ -261,7 +261,7 @@ class Manager:
         num_mappers = job['num_mappers']
         path = pathlib.Path(input_dir)
         files = list(path.glob('*'))
-        files.sort()
+        # files.sort()
         for i, file in enumerate(files):
             self.tasks.tasks[i % num_mappers].append(str(file))
 
@@ -368,8 +368,8 @@ class Manager:
                     self.tasks.tasks_queue.popleft()
                     self.tasks.tasks.pop(task_id)
                     self.workers.workers_avail -= 1
-            else:
-                time.sleep(1)
+            # else:
+            #     time.sleep(1)
 
     def start_stage(self, job, reduce, tmpdir):
         """Start map or reduce stage."""
