@@ -45,6 +45,11 @@ ex:
 ```
 
 ## To Test:
+To run all tests:
 ```
 (env) $ pytest -vvsx --log-cli-level=INFO
+```
+To run specific tests:
+```
+(env) $ pytest -vvsx --log-cli-level=INFO tests/test_manager_00.py::test_shutdown
 ```
