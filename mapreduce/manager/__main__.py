@@ -218,11 +218,9 @@ class Manager:
             )
             try:
                 sock.sendall(msg.encode('utf-8'))
-                return True
             except ConnectionRefusedError:
                 worker = (host, port)
                 self.handle_dead_worker(worker)
-                return False
 
     def assign_job(self):
         """Handle a new job."""
