@@ -10,6 +10,8 @@ import tempfile
 import threading
 import time
 import click
+from mapreduce.utils import create_tcp_server, create_udp_server
+
 
 # Configure logging
 LOGGER = logging.getLogger(__name__)
@@ -86,11 +88,11 @@ class Manager:
         self.signals = {"shutdown": False}
         self.threads = []
 
-        tcp_thread = threading.Thread(target=self.create_tcp_server,
-                                      args=(host, port))
+        tcp_thread = threading.Thread(target=create_tcp_server,
+                                      args=(host, port, self.signals, self.handle_tcp_message))
         self.threads.append(tcp_thread)
-        udp_thread = threading.Thread(target=self.create_udp_server,
-                                      args=(host, port))
+        udp_thread = threading.Thread(target=create_udp_server,
+                                      args=(host, port, self.signals, self.handle_udp_message))
         self.threads.append(udp_thread)
 
         LOGGER.info("Start TCP server thread")
@@ -104,108 +106,39 @@ class Manager:
         udp_thread.join()
         job_thread.join()
 
-    def create_tcp_server(self, host, port):
-        """Test TCP Socket Server."""
-        # Create an INET, STREAMing socket, this is TCP
-        # Note: context manager syntax allows for sockets to automatically be
-        # closed when an exception is raised or control flow returns.
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            # Bind the socket to the server
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    def handle_tcp_message(self, message):
+        try:
+            message_dict = json.loads(message)
             LOGGER.debug(
-                "TCP bind %s:%s", host, port
+                "TCP recv \n%s", json.dumps(message_dict, indent=2)
             )
-            sock.bind((host, port))
-            sock.listen()
-            # Socket accept() will block for a maximum of 1 second.  If you
-            # omit this, it blocks indefinitely, waiting for a connection.
-            sock.settimeout(1)
-            while not self.signals["shutdown"]:
-                # Wait for a connection for 1s.
-                # The socket library avoids consuming
-                # CPU while waiting for a connection.
-                try:
-                    clientsocket = sock.accept()[0]
-                except socket.timeout:
-                    continue
-                # Socket recv() will block for a maximum of 1 second.
-                # If you omit this, it blocks indefinitely,
-                # waiting for packets.
-                clientsocket.settimeout(1)
-                # Receive data, one chunk at a time.
-                # If recv() times out before we can read a chunk,
-                # then go back to the top of the loop and try
-                # again.
-                # When the client closes the connection,
-                # recv() returns empty data,
-                # which breaks out of the loop. We make a simplifying
-                # assumption that the client will always cleanly close the
-                # connection.
-                with clientsocket:
-                    message_chunks = []
-                    while True:
-                        try:
-                            data = clientsocket.recv(4096)
-                        except socket.timeout:
-                            continue
-                        if not data:
-                            break
-                        message_chunks.append(data)
-                # Decode list-of-byte-strings to UTF8 and parse JSON data
-                message_bytes = b''.join(message_chunks)
-                message_str = message_bytes.decode("utf-8")
-                try:
-                    message_dict = json.loads(message_str)
-                    LOGGER.debug(
-                        "TCP recv \n%s", json.dumps(message_dict, indent=2)
-                    )
 
-                    if message_dict['message_type'] == 'register':
-                        self.register_worker(message_dict)
-                    elif message_dict['message_type'] == 'new_manager_job':
-                        self.handle_new_job(message_dict)
+            if message_dict['message_type'] == 'register':
+                self.register_worker(message_dict)
+            elif message_dict['message_type'] == 'new_manager_job':
+                self.handle_new_job(message_dict)
 
-                    elif message_dict['message_type'] == 'finished':
-                        self.handle_finished_task(message_dict)
+            elif message_dict['message_type'] == 'finished':
+                self.handle_finished_task(message_dict)
 
-                    elif message_dict['message_type'] == 'shutdown':
-                        self.shutdown()
+            elif message_dict['message_type'] == 'shutdown':
+                self.shutdown()
 
-                except json.JSONDecodeError:
-                    continue
+        except json.JSONDecodeError:
+            return
 
-    def create_udp_server(self, host, port):
-        """Test UDP Socket Server."""
-        # Create an INET, DGRAM socket, this is UDP
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            # Bind the UDP socket to the server
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            LOGGER.debug(
-                "UDP bind %s:%s", host, port
-            )
-            sock.bind((host, port))
-            sock.settimeout(1)
-            # No sock.listen() since UDP doesn't establish connections like TCP
+    def handle_udp_message(self, message):
+        message_dict = json.loads(message)
+        for worker in self.workers.heartbeat_tracker.items():
+            if worker[1] and \
+                time.time() - worker[1] > 10:
+                self.handle_dead_worker(worker[0])
 
-            # Receive incoming UDP messages
-            while not self.signals["shutdown"]:
-
-                for worker in self.workers.heartbeat_tracker.items():
-                    if worker[1] and \
-                       time.time() - worker[1] > 10:
-                        self.handle_dead_worker(worker[0])
-                try:
-                    message_bytes = sock.recv(4096)
-                except socket.timeout:
-                    continue
-
-                message_str = message_bytes.decode("utf-8")
-                message_dict = json.loads(message_str)
-                if message_dict['message_type'] == 'heartbeat':
-                    worker_host = message_dict['worker_host']
-                    worker_port = message_dict['worker_port']
-                    worker = (worker_host, worker_port)
-                    self.workers.heartbeat_tracker[worker] = time.time()
+        if message_dict['message_type'] == 'heartbeat':
+            worker_host = message_dict['worker_host']
+            worker_port = message_dict['worker_port']
+            worker = (worker_host, worker_port)
+            self.workers.heartbeat_tracker[worker] = time.time()
 
     def send_tcp_msg(self, host, port, msg):
         """Send a tcp msg."""
