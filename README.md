@@ -2,15 +2,17 @@
 
 ## Setup:
 - Create a virtual environment in Python
-```$ python3 -m venv env```
 - Activate the virtual machine
-```$ source ./env/bin/activate```
 - Install all the dependencies in the requirements.txt file 
-```$ pip install -r requirements.txt```
 - Install mapreduce as package
-```$ pip install .```
 - Give execute access to bin/mapreduce script
-```$ chmod +x bin/mapreduce```
+```
+$ python3 -m venv env
+$ source ./env/bin/activate
+$ pip install -r requirements.txt
+$ pip install .
+$ chmod +x bin/mapreduce
+```
 
 ## To Run:
 ```
