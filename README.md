@@ -7,11 +7,11 @@
 - Install mapreduce as package
 - Give execute access to bin/mapreduce script
 ```
-$ python3 -m venv env
-$ source ./env/bin/activate
-$ pip install -r requirements.txt
-$ pip install .
-$ chmod +x bin/mapreduce
+python3 -m venv env
+source ./env/bin/activate
+pip install -r requirements.txt
+pip install .
+chmod +x bin/mapreduce
 ```
 
 ## To Run:
