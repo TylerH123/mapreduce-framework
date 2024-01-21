@@ -1,5 +1,6 @@
 import socket
 import logging
+import time
 
 # Configure logging
 LOGGER = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ def create_udp_server(host, port, signals, handle_message):
 			handle_message(message_str)
 
 
-def send_tcp_msg(host, port, msg, error_callback):
+def send_tcp_msg(host, port, msg, error_callback: None):
 	"""Send TCP message."""
 	with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 		# connect to the server
@@ -94,4 +95,27 @@ def send_tcp_msg(host, port, msg, error_callback):
 			sock.sendall(msg.encode('utf-8'))
 			return True
 		except ConnectionRefusedError:
-			error_callback()
+			if error_callback:
+				error_callback()
+			return False
+		
+
+def create_tcp_socket(manager_host, manager_port, create_message):
+	# create an INET, STREAMing socket, this is TCP
+	with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+		# connect to the server
+		sock.connect((manager_host, manager_port))
+		message = create_message(manager_host, manager_port)
+		sock.sendall(message.encode('utf-8'))
+
+
+def send_heartbeat(signals, manager_host, manager_port, message):
+        """Test UDP Socket Client."""
+        # Create an INET, DGRAM socket, this is UDP
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            # Connect to the UDP socket on server
+            sock.connect((manager_host, manager_port))
+            # Send a message
+            while not signals['shutdown']:
+                sock.sendall(message.encode('utf-8'))
+                time.sleep(2)

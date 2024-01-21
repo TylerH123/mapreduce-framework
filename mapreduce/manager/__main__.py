@@ -5,12 +5,11 @@ import logging
 import os
 import pathlib
 import shutil
-import socket
 import tempfile
 import threading
 import time
 import click
-from mapreduce.utils import create_tcp_server, create_udp_server
+from mapreduce.utils import create_tcp_server, create_udp_server, send_tcp_msg
 
 
 # Configure logging
@@ -140,22 +139,9 @@ class Manager:
             worker = (worker_host, worker_port)
             self.workers.heartbeat_tracker[worker] = time.time()
 
-    def send_tcp_msg(self, host, port, msg):
-        """Send a tcp msg."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            # connect to the server
-            sock.connect((host, port))
-            # send a message
-            LOGGER.debug(
-                "TCP send to %s:%s \n%s", host, port, msg
-            )
-            try:
-                sock.sendall(msg.encode('utf-8'))
-                return True
-            except ConnectionRefusedError:
-                worker = (host, port)
-                self.handle_dead_worker(worker)
-                return False
+    def set_dead_worker(self, host, port):
+        worker = (host, port)
+        self.handle_dead_worker(worker)
 
     def assign_job(self):
         """Handle a new job."""
@@ -183,8 +169,8 @@ class Manager:
                 task['worker_port'] = worker[1]
                 worker[3] = task
                 worker[2] = "b"
-                return self.send_tcp_msg(worker[0], worker[1],
-                                         json.dumps(task, indent=2))
+                return send_tcp_msg(worker[0], worker[1],
+                                        json.dumps(task, indent=2), self.set_dead_worker)
         return False
 
     def partition_map_task(self, job):
@@ -225,7 +211,7 @@ class Manager:
             "worker_port": worker_port
         }
         message_ack = json.dumps(msg, indent=2)
-        self.send_tcp_msg(worker_host, worker_port, message_ack)
+        send_tcp_msg(worker_host, worker_port, message_ack)
 
     def handle_new_job(self, message_dict):
         """Process incoming job."""
@@ -258,7 +244,7 @@ class Manager:
         for worker in self.workers.workers:
             if worker[2] != 'd':
                 msg = json.dumps({"message_type": "shutdown"})
-                self.send_tcp_msg(worker[0], worker[1], msg)
+                send_tcp_msg(worker[0], worker[1], msg)
         LOGGER.debug("Shutting down")
         self.signals['shutdown'] = True
 

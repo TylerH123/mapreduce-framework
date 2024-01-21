@@ -6,13 +6,12 @@ import logging
 import os
 import pathlib
 import shutil
-import socket
 import subprocess
 import tempfile
 import threading
-import time
 import contextlib
 import click
+from mapreduce.utils import create_tcp_server, send_tcp_msg, create_tcp_socket, send_heartbeat
 
 # Configure logging
 LOGGER = logging.getLogger(__name__)
@@ -27,6 +26,8 @@ class Worker:
             "Worker host=%s port=%s manager_host=%s, manager_port=%s pwd=%s",
             host, port, manager_host, manager_port, os.getcwd(),
         )
+        self.host = host
+        self.port = port
         self.manager_host = manager_host
         self.manager_port = manager_port
         self.workers = {}
@@ -34,138 +35,77 @@ class Worker:
         self.threads = []
 
         tcp_thread = threading.Thread(
-            target=self.create_tcp_server, args=(host, port))
+            target=create_tcp_server, args=(self.host, self.port, self.signals, self.handle_tcp_message))
         self.threads.append(tcp_thread)
 
         LOGGER.info("Start TCP server thread")
         tcp_thread.start()
 
-        # create an INET, STREAMing socket, this is TCP
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            # connect to the server
-            sock.connect((manager_host, manager_port))
-            # send a message
-            msg = {
-                "message_type": "register",
-                "worker_host": host,
-                "worker_port": port
-            }
-            message = json.dumps(msg, indent=2)
-            LOGGER.debug(
-                "TCP send to %s:%s \n%s", manager_host, manager_port, message
-            )
-            LOGGER.info(
-                "Sent connection request to Manager %s:%s",
-                manager_host, manager_port
-            )
-            sock.sendall(message.encode('utf-8'))
-
+        create_tcp_socket(manager_host, manager_port, self.create_register_message)
         for thread in self.threads:
             thread.join()
 
-    def create_tcp_server(self, host, port):
-        """Test TCP Socket Server."""
-        # Create an INET, STREAMing socket, this is TCP
-        # Note: context manager syntax allows for sockets to automatically be
-        # closed when an exception is raised or control flow returns.
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock_1:
-            # Bind the socket to the server
-            sock_1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            LOGGER.debug(
-                "TCP bind %s:%s", host, port
+    def create_register_message(self, manager_host, manager_port):
+        msg = {
+            "message_type": "register",
+            "worker_host": self.host,
+            "worker_port": self.port
+        }
+        message = json.dumps(msg, indent=2)
+        LOGGER.debug(
+            "TCP send to %s:%s \n%s", manager_host, manager_port, message
+        )
+        LOGGER.info(
+            "Sent connection request to Manager %s:%s",
+            manager_host, manager_port
+        )
+        return message
+
+    def handle_tcp_message(self, message):
+        try:
+            message_dict = json.loads(message)
+            LOGGER.info(
+                "TCP recv \n%s", json.dumps(message_dict, indent=2)
             )
-            sock_1.bind((host, port))
-            sock_1.listen()
-            # Socket accept() will block for a maximum of 1 second.  If you
-            # omit this, it blocks indefinitely, waiting for a connection.
-            sock_1.settimeout(1)
-            while not self.signals["shutdown"]:
-                # Wait for a connection for 1s.
-                # The socket library avoids consuming
-                # CPU while waiting for a connection.
-                try:
-                    clientsocket = sock_1.accept()[0]
-                except socket.timeout:
-                    continue
-                # Receive data, one chunk at a time.
-                # If recv() times out before we can read a chunk,
-                # then go back to the top of the loop and try
-                # again.
-                # When the client closes the connection,
-                # recv() returns empty data,
-                # which breaks out of the loop. We make a simplifying
-                # assumption that the client will always cleanly close the
-                # connection.
-                clientsocket.settimeout(1)
-                with clientsocket:
-                    message_chunks_1 = []
-                    while True:
-                        try:
-                            data_1 = clientsocket.recv(4096)
-                        except socket.timeout:
-                            continue
-                        if not data_1:
-                            break
-                        message_chunks_1.append(data_1)
 
-                # Decode list-of-byte-strings to UTF8 and parse JSON data
-                message_bytes = b''.join(message_chunks_1)
-                message_str = message_bytes.decode("utf-8")
-                try:
-                    message_dict = json.loads(message_str)
-                    LOGGER.info(
-                        "TCP recv \n%s", json.dumps(message_dict, indent=2)
-                    )
-
-                    if message_dict['message_type'] == 'register_ack':
-                        udp_thread = threading.Thread(
-                            target=self.send_heartbeat, args=(host, port))
-                        self.threads.append(udp_thread)
-
-                        LOGGER.info("Starting heartbeat thread")
-                        udp_thread.start()
-
-                    elif message_dict['message_type'] == 'new_map_task':
-                        LOGGER.debug("Received map job")
-                        map_task = threading.Thread(
-                            target=self.start_map_task, args=(message_dict,))
-                        self.threads.append(map_task)
-
-                        LOGGER.info("Starting mapper thread")
-                        map_task.start()
-                        map_task.join()
-
-                    elif message_dict['message_type'] == 'new_reduce_task':
-                        reduce_task = threading.Thread(
-                            target=self.start_reduce_task,
-                            args=(message_dict,))
-                        self.threads.append(reduce_task)
-
-                        LOGGER.info("Starting reduce thread")
-                        reduce_task.start()
-                        reduce_task.join()
-
-                    elif message_dict['message_type'] == 'shutdown':
-                        self.signals['shutdown'] = True
-
-                except json.JSONDecodeError:
-                    continue
-
-    def send_heartbeat(self, host, port):
-        """Test UDP Socket Client."""
-        # Create an INET, DGRAM socket, this is UDP
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            # Connect to the UDP socket on server
-            sock.connect((self.manager_host, self.manager_port))
-            # Send a message
-            while not self.signals['shutdown']:
-                message = json.dumps({
+            if message_dict['message_type'] == 'register_ack':
+                heartbeat_message = json.dumps({
                     "message_type": "heartbeat",
-                    "worker_host": host,
-                    "worker_port": port
+                    "worker_host": self.host,
+                    "worker_port": self.port
                 })
-                sock.sendall(message.encode('utf-8'))
-                time.sleep(2)
+                udp_thread = threading.Thread(
+                    target=send_heartbeat, args=(self.signals, self.manager_host, self.manager_port, heartbeat_message))
+                self.threads.append(udp_thread)
+
+                LOGGER.info("Starting heartbeat thread")
+                udp_thread.start()
+
+            elif message_dict['message_type'] == 'new_map_task':
+                LOGGER.debug("Received map job")
+                map_task = threading.Thread(
+                    target=self.start_map_task, args=(message_dict,))
+                self.threads.append(map_task)
+
+                LOGGER.info("Starting mapper thread")
+                map_task.start()
+                map_task.join()
+
+            elif message_dict['message_type'] == 'new_reduce_task':
+                reduce_task = threading.Thread(
+                    target=self.start_reduce_task,
+                    args=(message_dict,))
+                self.threads.append(reduce_task)
+
+                LOGGER.info("Starting reduce thread")
+                reduce_task.start()
+                reduce_task.join()
+
+            elif message_dict['message_type'] == 'shutdown':
+                self.signals['shutdown'] = True
+
+        except json.JSONDecodeError:
+            return
 
     def hash_word(self, word, mod):
         """Hash word."""
@@ -245,17 +185,6 @@ class Worker:
                 shutil.move(filepath, message_dict['output_directory'])
             self.finish_task(message_dict['task_id'], message_dict)
 
-    def send_tcp_msg(self, host, port, msg):
-        """Send TCP message."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            # connect to the server
-            sock.connect((host, port))
-            # send a message
-            LOGGER.debug(
-                "TCP send to %s:%s \n%s", host, port, msg
-            )
-            sock.sendall(msg.encode('utf-8'))
-
     def finish_task(self, task_id, message_dict):
         """Send finish msg to manager."""
         msg = {
@@ -264,8 +193,8 @@ class Worker:
             "worker_host": message_dict['worker_host'],
             "worker_port": message_dict['worker_port']
         }
-        self.send_tcp_msg(self.manager_host, self.manager_port,
-                          json.dumps(msg, indent=2))
+        send_tcp_msg(self.manager_host, self.manager_port,
+                        json.dumps(msg, indent=2))
 
     def sort_files(self, temp_output_files, message_dict):
         """Sort keys within individual files."""
