@@ -43,3 +43,8 @@ ex:
 	--nmappers 2 \
 	--nreducers 2
 ```
+
+## To Test:
+```
+(env) $ pytest -vvsx --log-cli-level=INFO
+```

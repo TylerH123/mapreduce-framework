@@ -298,7 +298,6 @@ class Manager:
         """Process incoming job."""
         LOGGER.info("Received new job")
         output = message_dict['output_directory']
-        output = message_dict['output_directory']
         if os.path.exists(output):
             LOGGER.debug("Deleting output directory")
             shutil.rmtree(output, ignore_errors=True)
