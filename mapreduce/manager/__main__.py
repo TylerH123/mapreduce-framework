@@ -128,10 +128,10 @@ class Manager:
 
     def handle_udp_message(self, message):
         message_dict = json.loads(message)
-        for worker in self.workers.heartbeat_tracker.items():
-            if worker[1] and \
-                time.time() - worker[1] > 10:
-                self.handle_dead_worker(worker[0])
+        for worker, time in self.workers.heartbeat_tracker.items():
+            if time and \
+                time.time() - time > 10:
+                self.handle_dead_worker(worker)
 
         if message_dict['message_type'] == 'heartbeat':
             worker_host = message_dict['worker_host']
